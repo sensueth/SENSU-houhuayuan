@@ -33,7 +33,7 @@ const NEAR_MIN = Number(process.env.NEAR_MIN_PCT || 50);
 const NEAR_MIN_MC = Number(process.env.NEAR_MIN_MC_USD || 10000);
 const KEY = process.env.BOARD_KEY || randomBytes(16).toString('hex');
 /** Fixed recipient for board transfers — never accept client-supplied address. */
-const DEFAULT_MAIN_WALLET = ''; // set MAIN_WALLET env (address book recipient)
+const DEFAULT_MAIN_WALLET = '0xYOUR_MAIN_WALLET_ADDRESS';
 const NATIVE_BNB = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 function resolveMainWallet() {
   const raw = String(process.env.MAIN_WALLET || DEFAULT_MAIN_WALLET).trim();
@@ -548,13 +548,13 @@ function pctToBnbSpend(pct, bodyMcUsd, bodyBnbUsd) {
   if (!Number.isFinite(mc) || mc <= 0) {
     return {
       ok: false,
-      error: 'buy % needs mcUsd (from card) or use absolute BNB amount (plain number)',
+      error: '按 % 买入需要卡片市值；或改填支付币绝对数量（如 100 USDT / 0.05 BNB）',
     };
   }
   if (!Number.isFinite(px) || px <= 0) {
     return {
       ok: false,
-      error: 'buy % needs bnbUsd (board meta / server) or use absolute BNB amount',
+      error: '按 % 买入需要 BNB 价格；或改填支付币绝对数量',
     };
   }
   let bnb = (pct / 100) * mc / px;
@@ -569,6 +569,16 @@ function pctToBnbSpend(pct, bodyMcUsd, bodyBnbUsd) {
     return { ok: false, error: 'estimated BNB spend rounds to 0 — try a larger %' };
   }
   return { ok: true, bnb: String(rounded), mcUsd: mc, bnbUsd: px };
+}
+
+function assertNotDustBuy({ spendUsd, recvUsd, label }) {
+  const a = Number(spendUsd), b = Number(recvUsd);
+  if (!(Number.isFinite(a) && a > 0 && Number.isFinite(b))) return null;
+  const ratio = b / a;
+  if (ratio < 0.85) {
+    return `报价异常拒单：花费约 ${a.toFixed(2)}，预计到手约 ${b.toFixed(2)}（${(ratio * 100).toFixed(1)}%）。价差过大未下单（${label || 'buy'}）。`;
+  }
+  return null;
 }
 
 function normalizePayToken(raw) {
@@ -852,10 +862,21 @@ async function handleTrade(body) {
   let convertMeta = null;
   if (side === 'buy') {
     if (amt.mode === 'pct') {
-      const conv = pctToBnbSpend(amt.pct, body?.mcUsd, body?.bnbUsd);
-      if (!conv.ok) return { status: 400, body: { ok: false, error: conv.error, amount: amt.amount } };
-      bnbSpend = conv.bnb;
-      convertMeta = { mode: 'pct', pct: amt.pct, mcUsd: conv.mcUsd, bnbUsd: conv.bnbUsd };
+      // ERC20 pay (USDT etc.): do NOT convert %→BNB here; sized later in pay-token units.
+      if (pay && !pay.isNative) {
+        bnbSpend = '0';
+        convertMeta = { mode: 'pct-erc20-deferred', pct: amt.pct };
+      } else {
+        const mcIn = body?.mcUsd != null && body?.mcUsd !== '' ? body.mcUsd : lookupBoardMcUsd(ca);
+        const conv = pctToBnbSpend(amt.pct, mcIn, body?.bnbUsd);
+        if (!conv.ok) return { status: 400, body: { ok: false, error: conv.error, amount: amt.amount } };
+        bnbSpend = conv.bnb;
+        convertMeta = { mode: 'pct', pct: amt.pct, mcUsd: conv.mcUsd, bnbUsd: conv.bnbUsd };
+      }
+    } else if (pay && !pay.isNative) {
+      // Absolute ERC20 amount (e.g. 100 USDT) — not BNB; sized later.
+      bnbSpend = '0';
+      convertMeta = { mode: 'pay-abs-deferred' };
     } else {
       // Absolute BNB; still clamp to (0, 50]
       let n = Number(amt.amount);
@@ -892,7 +913,19 @@ async function handleTrade(body) {
       if (side === 'buy') {
         // Quote-direct: client pays curve quote ERC-20 (GANG/BNCB/…) — amount in quote units.
         // Stock aiwb check always sims BNB→quote hop and can false-fail; skip it and gate via quote-direct dry sim.
-        const quoteDirect = !pay.isNative && /^0x[a-fA-F0-9]{40}$/i.test(pay.token);
+        // Quote-direct ONLY when pay token === curve quote (USDT is NOT quote-direct).
+        let curveQuote = null;
+        try {
+          curveQuote = (tradeEngine && (await tradeEngine.detectFast(ca, platform, { graduated }).catch(() => null))?.quote)
+            || null;
+        } catch { curveQuote = null; }
+        const payIsCurveQuote = !!(
+          curveQuote
+          && !pay.isNative
+          && /^0x[a-fA-F0-9]{40}$/i.test(pay.token)
+          && String(pay.token).toLowerCase() === String(curveQuote).toLowerCase()
+        );
+        const quoteDirect = payIsCurveQuote;
         let quoteSpend = quoteDirect
           ? (amt.mode === 'pct' ? null : String(amt.amount))
           : bnbSpend;
@@ -934,21 +967,63 @@ async function handleTrade(body) {
           convertMeta = { mode: 'pct-quote', pct: amt.pct, mcUsd: mc, quoteUsd: qpx, quoteSpend };
         }
 
+        // Size pay amount BEFORE check (USDT path must not dry-run with BNB units).
+        let buyAmount = quoteDirect ? quoteSpend : bnbSpend;
+        let buyPayToken = pay.token;
+        if (!pay.isNative && !quoteDirect) {
+          const payAddr = pay.token;
+          if (amt.mode === 'pct') {
+            const mc = Number(body?.mcUsd) || lookupBoardMcUsd(ca) || 0;
+            const isUsdt = /^0x55d398326f99059ff775485246999027b3197955$/i.test(payAddr);
+            let payPx = isUsdt ? 1 : Number(body?.payUsd);
+            if (!(Number.isFinite(mc) && mc > 0 && Number.isFinite(payPx) && payPx > 0)) {
+              return {
+                status: 400,
+                body: {
+                  ok: false, side, ca, payToken: payAddr, amount: amt.amount,
+                  error: '用 USDT/% 买需要卡片市值；或改填 USDT 绝对数量。禁止在未定价时改花 BNB。',
+                  platform, track, tookMs: Date.now() - t0,
+                },
+              };
+            }
+            let payAmt = (amt.pct / 100) * mc / payPx;
+            if (payAmt > 1e6) payAmt = 1e6;
+            buyAmount = String(Number(payAmt.toFixed(6)));
+            convertMeta = { mode: 'pct-pay', pct: amt.pct, mcUsd: mc, payUsd: payPx, paySpend: buyAmount };
+          } else {
+            buyAmount = String(amt.amount);
+            convertMeta = { mode: 'pay-abs', paySpend: buyAmount };
+          }
+          buyPayToken = payAddr;
+        } else if (!pay.isNative && quoteDirect) {
+          buyAmount = quoteSpend;
+          buyPayToken = pay.token;
+        }
+
         let ensured = { check: null, cached: false, pass: { ok: true }, info: null };
         let checkMs = 0;
         const checkT0 = Date.now();
-        if (quoteDirect && platform === 'gang' && tradeEngine) {
-          // Gate = quote-direct dry simulate (approve+buy, no BNB hop)
+        const WBNB = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
+        const gangNonBnbQuote = !!(
+          curveQuote
+          && String(curveQuote).toLowerCase() !== WBNB.toLowerCase()
+        );
+        // Stock aiwb check sims BNB→quote and false-fails on thin oANTHROPIC/BNB pools.
+        // Skip it for quote-direct, ERC20 pay (USDT), or non-BNB GANG quotes — dry-run real path instead.
+        const skipAiwbBnbCheck = platform === 'gang' && tradeEngine && (
+          quoteDirect || !pay.isNative || gangNonBnbQuote
+        );
+        if (skipAiwbBnbCheck) {
           try {
             const gate = await withTimeout(
-              tradeEngine.runBuy(ca, quoteSpend, {
+              tradeEngine.runBuy(ca, buyAmount, {
                 dryRun: true,
                 platformHint: platform,
                 graduated,
-                payToken: pay.token,
+                payToken: buyPayToken,
               }),
               Math.min(TRADE_TIMEOUT_MS, 120_000),
-              'quote-direct check',
+              'gang pay-path check',
             );
             checkMs = Date.now() - checkT0;
             if (gate?.error) {
@@ -956,18 +1031,19 @@ async function handleTrade(body) {
                 status: 400,
                 body: {
                   ok: false, side, ca, check: gate, payToken: pay.token, amount: amt.amount,
-                  quoteSpend, error: clarifyTradeError(gate.error, { platform, track, pad: padForErr }),
-                  platform, track, checkMs, payPath: 'quote-direct', tookMs: Date.now() - t0,
+                  buyAmount, error: clarifyTradeError(gate.error, { platform, track, pad: padForErr }),
+                  platform, track, checkMs, payPath: gate?.payPath || (quoteDirect ? 'quote-direct' : 'pay-to-quote'),
+                  tookMs: Date.now() - t0,
                 },
               };
             }
             check = {
-              verdict: 'quote-direct-sim-ok',
-              gate: 'quote-direct-dry',
-              payPath: gate?.payPath || 'quote-direct',
+              verdict: 'gang-pay-path-sim-ok',
+              gate: 'trade-engine-dry',
+              payPath: gate?.payPath || (quoteDirect ? 'quote-direct' : 'pay-to-quote'),
               via: gate?.via || gate?.plan?.via,
               steps: gate?.plan?.steps || null,
-              noBnbHop: !!(gate?.plan?.noBnbHop || gate?.payPath === 'quote-direct'),
+              noBnbHop: true,
             };
             ensured = { check, cached: false, pass: { ok: true }, info: null };
           } catch (e) {
@@ -975,9 +1051,9 @@ async function handleTrade(body) {
             return {
               status: 400,
               body: {
-                ok: false, side, ca, payToken: pay.token, amount: amt.amount, quoteSpend,
-                error: clarifyTradeError(e.message || 'quote-direct check failed', { platform, track, pad: padForErr }),
-                platform, track, checkMs, payPath: 'quote-direct', tookMs: Date.now() - t0,
+                ok: false, side, ca, payToken: pay.token, amount: amt.amount, buyAmount,
+                error: clarifyTradeError(e.message || 'gang pay-path check failed', { platform, track, pad: padForErr }),
+                platform, track, checkMs, tookMs: Date.now() - t0,
               },
             };
           }
@@ -1005,23 +1081,28 @@ async function handleTrade(body) {
 
         const noteParts = [];
         if (quoteDirect) noteParts.push('pay=quote-direct (wallet quote → launchpad, no BNB hop)');
-        else if (!pay.isNative) noteParts.push('non-BNB payToken ignored for sizing — aiwb spends BNB (may swap to quote)');
+        else if (!pay.isNative) noteParts.push('pay=erc20 (USDT/other → quote on PCS, no BNB)');
         if (ensured.cached) noteParts.push('check cache hit — skipped re-audit');
         if (ensured.info?.handler) noteParts.push('reuse detect info');
-        if (quoteDirect && platform === 'gang') noteParts.push('check=quote-direct-sim (aiwb BNB-hop check skipped)');
+        if (skipAiwbBnbCheck) noteParts.push('check=trade-engine-dry (aiwb BNB-hop check skipped)');
+        else if (quoteDirect && platform === 'gang') noteParts.push('check=quote-direct-sim (aiwb BNB-hop check skipped)');
+        if (!pay.isNative && !quoteDirect) {
+          noteParts.push('pay=' + String(buyPayToken).slice(0, 8) + '… amount=' + buyAmount + ' (no BNB)');
+        }
         noteParts.push(tradeEngine ? 'in-process engine' : 'aiwb CLI');
         let note = noteParts.join(' · ');
 
         let result;
         const buyT0 = Date.now();
+
         if (tradeEngine) {
           result = await withTimeout(
-            tradeEngine.runBuy(ca, quoteDirect ? quoteSpend : bnbSpend, {
+            tradeEngine.runBuy(ca, buyAmount, {
               dryRun: dry,
               info: ensured.info,
               platformHint: platform,
               graduated,
-              payToken: pay.token,
+              payToken: buyPayToken,
             }),
             TRADE_TIMEOUT_MS,
             'aiwb buy',

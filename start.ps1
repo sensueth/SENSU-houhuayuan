@@ -24,10 +24,10 @@ if (-not $env:GANG_RPC_URL) {
   $env:GANG_RPC_URL = ($env:BSC_RPC -split ',')[0].Trim()
 }
 # Stable local key (override with BOARD_KEY if needed)
-if (-not $env:BOARD_KEY) { $env:BOARD_KEY = 'change-me-local-board-key' }
+if (-not $env:BOARD_KEY) { $env:BOARD_KEY = 'REPLACE_WITH_YOUR_BOARD_KEY' }
 
 # Fixed main-wallet recipient for board 转主钱包 (server ignores client recipient)
-if (-not $env:MAIN_WALLET) { $env:MAIN_WALLET = '0xYourMainWalletAddressHere' }
+if (-not $env:MAIN_WALLET) { $env:MAIN_WALLET = '0xYOUR_MAIN_WALLET_ADDRESS' }
 
 # GMGN OpenAPI key for FLAP/FOUR near+graduated backfill (exist-auth trenches)
 if (-not $env:GMGN_API_KEY) {

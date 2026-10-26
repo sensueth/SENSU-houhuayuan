@@ -15,13 +15,14 @@ FLAP/FOUR **near（即将打满）** and **graduated（已开盘）** are backfi
 $env:HTTP_PROXY='http://127.0.0.1:18081'
 $env:HTTPS_PROXY='http://127.0.0.1:18081'
 $env:NODE_USE_ENV_PROXY='1'
-$env:BOARD_KEY='change-me-local-board-key'
+$env:BOARD_KEY='YOUR_BOARD_KEY'
+$env:MAIN_WALLET='0xYOUR_MAIN_WALLET_ADDRESS'
 cd "$env:LOCALAPPDATA\ai-wallet-curve-board"
 # or: .\start.ps1
 node server.mjs
 ```
 
-Open `http://127.0.0.1:3847/?k=change-me-local-board-key`.
+Open `http://127.0.0.1:3847/?k=YOUR_BOARD_KEY`.
 
 Requires global `aiwb`, `baw`, and `@gangfun/cli` (`gang`) on PATH. Proxy env is required for baw/gang on this host.
 

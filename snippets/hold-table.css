@@ -1,0 +1,154 @@
+/* ---- holdings table tools ---- */
+.holdings-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-left: auto;
+}
+.hold-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #9ca3af;
+}
+.hold-tool select {
+  background: #12161f;
+  color: #e5e7eb;
+  border: 1px solid #2a3140;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  max-width: 7.5rem;
+}
+.hold-tool select:focus {
+  outline: none;
+  border-color: rgba(61,224,255,.55);
+}
+.holdings-table-wrap {
+  overflow: auto;
+  max-height: min(52vh, 520px);
+  border: 1px solid #1f2633;
+  border-radius: 10px;
+  background: #0c1018;
+}
+.holdings-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+.holdings-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #141a24;
+  color: #9ca3af;
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #252b38;
+  white-space: nowrap;
+}
+.holdings-table thead th.num,
+.holdings-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.holdings-table tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #171c26;
+  vertical-align: middle;
+  color: #d1d5db;
+}
+.holdings-table tbody tr.hold-row:hover {
+  background: rgba(61,224,255,.05);
+}
+.holdings-table tbody tr.hold-row.blocked {
+  opacity: .72;
+}
+.holdings-table tbody tr.hold-group-row td {
+  background: #10151e;
+  padding: 6px 10px;
+  border-bottom: 1px solid #1f2633;
+}
+.holdings-table .col-plat { white-space: nowrap; }
+.holdings-table .col-name { min-width: 8rem; }
+.holdings-table .col-ca button.h-ca {
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.holdings-table .col-ca button.h-ca:hover { color: var(--cyan, #3de0ff); }
+.holdings-table .col-act {
+  white-space: nowrap;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.holdings-table .h-plat {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid #374151;
+  color: #9ca3af;
+}
+.holdings-table .h-plat.flap { color: #a78bfa; border-color: rgba(167,139,250,.4); }
+.holdings-table .h-plat.gang { color: #34d399; border-color: rgba(52,211,153,.4); }
+.holdings-table .h-plat.four { color: #60a5fa; border-color: rgba(96,165,250,.4); }
+.holdings-table .h-plat.quote,
+.holdings-table .h-plat.native { color: #fbbf24; border-color: rgba(251,191,36,.35); }
+.holdings-table .h-pad {
+  font-size: 10px;
+  opacity: .85;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #3a2a12;
+  color: #f0c060;
+}
+.holdings-table .h-amt { color: #a7f3d0; font-variant-numeric: tabular-nums; }
+.holdings-table .h-usd { color: #9ca3af; font-variant-numeric: tabular-nums; }
+.holdings-table .h-usd.unk { color: #6b7280; font-style: italic; }
+.holdings-table .h-cost { color: #93c5fd; font-variant-numeric: tabular-nums; }
+.holdings-table .h-cost.unk { color: #6b7280; font-style: italic; }
+.holdings-table .h-pnl { font-weight: 600; font-variant-numeric: tabular-nums; }
+.holdings-table .h-pnl.up { color: #34d399; }
+.holdings-table .h-pnl.down { color: #f87171; }
+.holdings-table .h-pnl.unk { color: #6b7280; font-weight: 500; font-style: italic; }
+.holdings-table .h-sell {
+  padding: 2px 7px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid rgba(248,113,113,.45);
+  background: transparent;
+  color: #f87171;
+  cursor: pointer;
+}
+.holdings-table .h-sell:disabled { opacity: .45; cursor: not-allowed; }
+.holdings-table .h-sell:hover:not(:disabled) { background: rgba(248,113,113,.12); }
+.holdings-table .h-xfer {
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid rgba(61,224,255,.45);
+  background: transparent;
+  color: var(--cyan, #3de0ff);
+  cursor: pointer;
+}
+.holdings-table .h-xfer:hover:not(:disabled) { background: rgba(61,224,255,.12); }
+.holdings-table .h-xfer:disabled { opacity: .45; cursor: not-allowed; }
+.holdings-table .holdings-empty {
+  text-align: center;
+  color: #6b7280;
+  padding: 18px 10px;
+}
+.holdings-h {
+  flex-wrap: wrap;
+  gap: 8px;
+}

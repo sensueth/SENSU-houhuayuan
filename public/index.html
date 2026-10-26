@@ -17,7 +17,7 @@
       <span class="wallet-label">AI钱包</span>
       <span class="wallet-id" id="wallet-id">—</span>
       <span class="wallet-addr" id="wallet-addr">未连接</span>
-      <span class="xfer-dest" id="xfer-dest" title="转主钱包固定收款地址">转账→0xA29f…96D5</span>
+      <span class="xfer-dest" id="xfer-dest" title="转主钱包固定收款地址">转账→主钱包</span>
     </div>
     <div class="trade-bar" id="trade-bar" title="同一行选支付币与数量；% 可选">
       <div class="trade-row" id="buy-row">
@@ -27,6 +27,7 @@
           <button type="button" class="pay-chip" data-pay="GANG">GANG</button>
           <button type="button" class="pay-chip" data-pay="BNCB">BNCB</button>
           <button type="button" class="pay-chip" data-pay="NVDAB">NVDAB</button>
+            <button type="button" class="pay-chip" data-pay="USDT">USDT</button>
         </div>
         <label class="trade-field">
           <input type="text" id="pay-ca" placeholder="其它 CA / 符号" spellcheck="false" autocomplete="off" />
@@ -77,12 +78,12 @@
     </div>
   </header>
 
-  <section class="holdings" id="holdings" aria-label="AI钱包持仓">
+    <section class="holdings" id="holdings" aria-label="AI钱包持仓">
     <div class="holdings-h">
       <span class="holdings-title">持仓</span>
       <span class="holdings-meta" id="holdings-meta">加载中…</span>
     </div>
-    <div class="holdings-list" id="holdings-list"></div>
+    <div class="holdings-list" id="holdings-list" hidden></div>
   </section>
 
   <div id="toast" class="toast" hidden></div>
@@ -208,6 +209,56 @@
         <span class="count" id="cnt-graduated">0</span>
       </header>
       <div class="list" id="list-graduated"></div>
+    </section>
+    <section class="col" data-col="hold">
+      <header class="col-h">
+        <h2>持仓</h2>
+        <span class="count" id="cnt-hold">0</span>
+        <div class="hold-col-tools" id="holdings-tools">
+          <label class="hold-tool" title="平台筛选">平台
+            <select id="hold-plat" class="col-sort" aria-label="平台筛选">
+              <option value="all">全部</option>
+              <option value="quote">报价币</option>
+              <option value="gang">GANG</option>
+              <option value="flap">FLAP</option>
+              <option value="four">FOUR</option>
+              <option value="other">其他</option>
+            </select>
+          </label>
+          <label class="hold-tool" title="持仓价值筛选">价值
+            <select id="hold-val" class="col-sort" aria-label="持仓价值筛选">
+              <option value="all">全部</option>
+              <option value="valued">有估值</option>
+              <option value="1">≥ $1</option>
+              <option value="10">≥ $10</option>
+              <option value="50">≥ $50</option>
+              <option value="100">≥ $100</option>
+              <option value="unvalued">无估值</option>
+            </select>
+          </label>
+          <label class="hold-tool" title="盈利筛选">盈利
+            <select id="hold-pnl" class="col-sort" aria-label="盈利筛选">
+              <option value="all">全部</option>
+              <option value="profit">盈利</option>
+              <option value="loss">亏损</option>
+              <option value="known">有盈亏</option>
+              <option value="unk">盈亏未知</option>
+            </select>
+          </label>
+          <label class="hold-tool" title="排序">排序
+            <select id="hold-sort" class="col-sort" aria-label="持仓排序">
+              <option value="value-desc">价值 ↓</option>
+              <option value="value-asc">价值 ↑</option>
+              <option value="pnl-desc">盈利 ↓</option>
+              <option value="pnl-asc">盈利 ↑</option>
+              <option value="pnlpct-desc">盈亏% ↓</option>
+              <option value="pnlpct-asc">盈亏% ↑</option>
+              <option value="group">按平台分组</option>
+            </select>
+          </label>
+        </div>
+      </header>
+      <div class="list" id="list-hold"></div>
     </section>
   </main>
 

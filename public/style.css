@@ -187,12 +187,15 @@ body {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
   min-height: 0;
   overflow: hidden;
 }
-@media (max-width: 960px) {
+@media (max-width: 1280px) {
+  .board { grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: auto; }
+}
+@media (max-width: 720px) {
   .board { grid-template-columns: 1fr; overflow: auto; }
 }
 .col {
@@ -795,3 +798,164 @@ body {
   .xfer-row { max-width: 100%; justify-content: flex-start; }
   .xfer-dest { display: none; } /* keep header compact on narrow */
 }
+
+
+/* ---- holdings column (4th board col) ---- */
+.col[data-col="hold"] .col-h h2 { color: #f0abfc; }
+.col[data-col="hold"] .col-h {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.hold-col-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
+  width: 100%;
+  margin-top: 2px;
+}
+.hold-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.hold-tool .col-sort {
+  max-width: 6.8rem;
+  padding-right: 22px;
+  font-size: 11px;
+}
+.col[data-col="hold"] .col-sort:hover { border-color: rgba(240,171,252,.55); color: #f0abfc; }
+.col[data-col="hold"] .col-sort:focus { border-color: #f0abfc; }
+.hold-col-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+/* Compact holdings cards: logo | name+stats | actions — fills full width, no empty hole */
+.card.hold-card {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  align-items: start;
+  cursor: pointer;
+}
+.card.hold-card > .logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  font-size: 12px;
+  align-self: center;
+}
+.card.hold-card > .info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.card.hold-card > .side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 168px;
+}
+.card.hold-card .row1 {
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.card.hold-card .name {
+  font-size: 16px;
+  font-weight: 700;
+  max-width: 11rem;
+}
+.card.hold-card .sym {
+  font-size: 14px;
+  color: var(--muted);
+}
+.card.hold-card .tag {
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.card.hold-card .hold-stats,
+.card.hold-card .stats.hold-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 0;
+  margin-top: 0;
+  font-size: 13px;
+  width: 100%;
+  color: var(--muted);
+}
+.card.hold-card .hold-stats .hold-metric {
+  margin-right: 2px;
+}
+.card.hold-card .hold-stats .hold-sep {
+  margin: 0 6px;
+  opacity: .45;
+  user-select: none;
+}
+.card.hold-card .hold-stats b {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.card.hold-card .hold-pnl-stat {
+  margin-left: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.card.hold-card .hold-pnl-stat.up { color: #34d399; font-weight: 600; }
+.card.hold-card .hold-pnl-stat.down { color: #f87171; font-weight: 600; }
+.card.hold-card .hold-pnl-stat.unk,
+.card.hold-card .hold-stats b.unk { color: #6b7280; font-style: italic; font-weight: 500; }
+.card.hold-card .hold-cost-stat { color: #93c5fd; }
+.card.hold-card .stats .ca {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 0 5px;
+}
+.card.hold-card .actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.card.hold-card .btn-sell,
+.card.hold-card .h-sell {
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+.card.hold-card .btn-xfer,
+.card.hold-card .h-xfer {
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid rgba(61,224,255,.45);
+  background: transparent;
+  color: var(--cyan);
+  cursor: pointer;
+  min-width: 0;
+}
+.card.hold-card .btn-xfer:hover:not(:disabled),
+.card.hold-card .h-xfer:hover:not(:disabled) { background: rgba(61,224,255,.12); }
+.card.hold-card .xfer-row {
+  max-width: 160px;
+  justify-content: flex-end;
+}
+.card.hold-card .trade-status {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  padding-top: 0;
+}
+.holdings-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }

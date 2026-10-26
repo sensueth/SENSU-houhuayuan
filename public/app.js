@@ -14,6 +14,7 @@ const PAY_TOKEN_MAP = {
   GANG: '0x0c6302401aa5325c2e36f170f52c00b1d220b405',
   BNCB: '0x4902C5ebc598265Ed2212b559B042De8a5Eeec3f',
   NVDAB: '0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436',
+  USDT: '0x55d398326f99059fF775485246999027B3197955',
 };
 
 const S = {
@@ -34,6 +35,10 @@ const S = {
   buyPct: 0,      // optional; 0 = not using %
   busy: new Set(),
   holdings: null,
+  holdPlat: (typeof localStorage !== 'undefined' && localStorage.getItem('curve-hold-plat')) || 'all',
+  holdVal: (typeof localStorage !== 'undefined' && localStorage.getItem('curve-hold-val')) || 'all',
+  holdPnl: (typeof localStorage !== 'undefined' && localStorage.getItem('curve-hold-pnl')) || 'all',
+  holdSort: (typeof localStorage !== 'undefined' && localStorage.getItem('curve-hold-sort')) || 'value-desc',
   detail: null,       // coin object currently in drawer
   detailRes: '1m',
   detailHours: 2,
@@ -42,12 +47,12 @@ const S = {
   detailHoldersBusy: false,
   holdersByCa: {}, // ca -> { holders, count, at }
   xferPct: 100,   // default 转主钱包 %
-  mainWallet: '' // filled from /api/health,
-  mainWalletShort: '0xA29f…96D5',
+  mainWallet: '',
+  mainWalletShort: '',
 };
 
-/** User AI wallet — highlight in 持有人 list when present. */
-const USER_WALLET = ''; // filled from /api/health wallet when available
+/** User AI wallet — highlight in 持有人 list when present. Filled from /api/health. */
+const USER_WALLET = '';
 function myWalletAddr() {
   const live = S.board?.meta?.wallet?.address;
   return String(live || USER_WALLET || '').trim().toLowerCase();
@@ -261,19 +266,61 @@ function preferPayTokenForCard(coin) {
     need = Math.min(bal, Math.max(bal * 0.05, 1));
   }
   if (bal + 1e-12 < need) {
-    // Quote too small for this size — fall back to BNB (aiwb will swap to quote).
-    const prevKey = S.payKey;
-    const curKey = getPayToken().key;
-    if (prevKey === qKey || curKey === qKey) {
-      S.payKey = 'BNB';
-      const payCa = $('#pay-ca');
-      if (payCa) payCa.value = '';
+    // Quote too small. Prefer user's explicit pay CA (USDT etc.) — NEVER clear it or force BNB.
+    const payCaEl = $('#pay-ca');
+    const explicit = (payCaEl?.value || '').trim();
+    const cur = getPayToken();
+    if (explicit && /^0x[a-fA-F0-9]{40}$/i.test(explicit)) {
+      const isUsdt = explicit.toLowerCase() === String(PAY_TOKEN_MAP.USDT || '').toLowerCase();
+      if (isUsdt || S.payKey === 'USDT') {
+        S.payKey = 'USDT';
+        const size0 = getBuySize();
+        const mc = Number(coin?.mcUsd ?? coin?.fdvUsd);
+        let usdtAmt = null;
+        if (size0.mode === 'pct' && Number.isFinite(mc) && mc > 0) usdtAmt = (size0.pct / 100) * mc;
+        else if (Number.isFinite(need) && need > 0 && Number.isFinite(qPx) && qPx > 0) usdtAmt = need * qPx;
+        if (Number.isFinite(usdtAmt) && usdtAmt > 0) {
+          S.buyMode = 'abs';
+          S.buyAmt = Math.round(usdtAmt * 100) / 100;
+          S.buyPct = 0;
+          const amtEl = $('#buy-amt');
+          if (amtEl) amtEl.value = String(S.buyAmt);
+          const pctEl = $('#buy-pct');
+          if (pctEl) pctEl.value = '';
+        }
+        syncPayUI();
+        syncBuyUI();
+        syncBuyButtons();
+        return { switched: true, key: 'USDT', reason: `insufficient-${qKey}-keep-USDT`, bal, need, fallback: true, usdtAmt };
+      }
+      return { switched: false, key: cur.key, reason: `insufficient-${qKey}-keep-payCa`, bal, need, fallback: false, keepPay: explicit };
+    }
+    // No explicit pay CA: if wallet has USDT, switch pay to USDT instead of BNB
+    const usdtHold = holdingForPayKey('USDT');
+    const usdtBal = usdtHold ? Number(usdtHold.amount) : 0;
+    if (usdtBal > 0) {
+      S.payKey = 'USDT';
+      if (payCaEl) payCaEl.value = '';
+      const size0 = getBuySize();
+      const mc = Number(coin?.mcUsd ?? coin?.fdvUsd);
+      let usdtAmt = null;
+      if (size0.mode === 'pct' && Number.isFinite(mc) && mc > 0) usdtAmt = (size0.pct / 100) * mc;
+      else if (Number.isFinite(need) && need > 0 && Number.isFinite(qPx) && qPx > 0) usdtAmt = need * qPx;
+      if (Number.isFinite(usdtAmt) && usdtAmt > 0) {
+        S.buyMode = 'abs';
+        S.buyAmt = Math.round(usdtAmt * 100) / 100;
+        S.buyPct = 0;
+        const amtEl = $('#buy-amt');
+        if (amtEl) amtEl.value = String(S.buyAmt);
+        const pctEl = $('#buy-pct');
+        if (pctEl) pctEl.value = '';
+      }
       syncPayUI();
       syncBuyUI();
       syncBuyButtons();
-      return { switched: true, key: 'BNB', reason: `insufficient-${qKey}`, bal, need, fallback: true };
+      return { switched: true, key: 'USDT', reason: `insufficient-${qKey}-use-USDT`, bal, need, fallback: true, usdtAmt };
     }
-    return { switched: false, key: curKey, reason: `insufficient-${qKey}`, bal, need, fallback: false };
+    return { switched: false, key: cur.key, reason: `insufficient-${qKey}`, bal, need, fallback: false };
   }
 
   const prevKey = S.payKey;
@@ -502,7 +549,7 @@ async function doTrade(side, card, ca, btn, coin = null) {
       if (pref.fallback || pref.key === 'BNB') {
         const balS = Number.isFinite(pref.bal) ? pref.bal.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '?';
         const needS = Number.isFinite(pref.need) ? pref.need.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '?';
-        toast(`${qk} 不足（有 ${balS} / 需 ${needS}），已改用 BNB`, 'pending');
+        toast(`${qk} 不足（有 ${balS} / 需 ${needS}），请用 USDT 支付（勿花 BNB）`, 'pending');
       } else {
         toast(`钱包 ${qk} 不足本次买入，仍用 ${getPayToken().label}（可能先换报价币）`, 'pending');
       }
@@ -558,9 +605,18 @@ async function doTrade(side, card, ca, btn, coin = null) {
         if (qpx) body.quoteUsd = qpx;
         body.quoteSymbol = qKey;
       }
-      // % + quote-direct without prices cannot size — fail in UI before opaque server error.
-      if (getBuySize().mode === 'pct' && payIsQuote && (!body.mcUsd || !body.quoteUsd)) {
-        toast('报价币按 % 买入需要市值与报价币价格（持仓估值）。可改填绝对数量，或等持仓加载后再试', 'err');
+      // % buy needs card MC for any pay token (BNB/USDT/quote).
+      if (getBuySize().mode === 'pct' && !(body.mcUsd > 0)) {
+        toast('按 % 买入需要卡片市值；请改填绝对数量（如 100），或等市值刷新后再试', 'err');
+        S.busy.delete(key);
+        btn.dataset.busy = '';
+        btn.disabled = false;
+        btn.textContent = label;
+        return;
+      }
+      // % + quote-direct without quote price cannot size.
+      if (getBuySize().mode === 'pct' && payIsQuote && !body.quoteUsd) {
+        toast('报价币按 % 买入需要报价币价格（持仓估值）。可改填绝对数量，或等持仓加载后再试', 'err');
         S.busy.delete(key);
         btn.dataset.busy = '';
         btn.disabled = false;
@@ -639,7 +695,7 @@ function holdingAmountForCa(ca) {
 function updateXferDestHint() {
   const el = $('#xfer-dest');
   if (!el) return;
-  const short = S.mainWalletShort || shortCa(S.mainWallet) || '0xA29f…96D5';
+  const short = S.mainWalletShort || shortCa(S.mainWallet) || '主钱包';
   el.textContent = `转账→${short}`;
   el.title = `转主钱包固定收款：${S.mainWallet || ''}`;
 }
@@ -1109,6 +1165,285 @@ function holdGroupKey(it) {
   return 'other'; // pancake / unknown / null
 }
 
+function holdItemPnlUsd(it) {
+  if (it?.pnlUsd != null && Number.isFinite(Number(it.pnlUsd))) return Number(it.pnlUsd);
+  return null;
+}
+
+function holdItemPnlPct(it) {
+  if (it?.pnlPct != null && Number.isFinite(Number(it.pnlPct))) return Number(it.pnlPct);
+  return null;
+}
+
+function filterHoldItems(items) {
+  let out = items.slice();
+  const plat = S.holdPlat || 'all';
+  if (plat !== 'all') out = out.filter(it => holdGroupKey(it) === plat);
+  const vf = S.holdVal || 'all';
+  if (vf === 'valued') out = out.filter(it => holdItemValueUsd(it) != null);
+  else if (vf === 'unvalued') out = out.filter(it => holdItemValueUsd(it) == null);
+  else if (vf !== 'all') {
+    const min = Number(vf);
+    if (Number.isFinite(min)) out = out.filter(it => {
+      const v = holdItemValueUsd(it);
+      return v != null && v >= min;
+    });
+  }
+  const pf = S.holdPnl || 'all';
+  if (pf === 'profit') out = out.filter(it => {
+    const p = holdItemPnlUsd(it);
+    return p != null ? p > 0 : (it.pnlBnb != null && Number(it.pnlBnb) > 0);
+  });
+  else if (pf === 'loss') out = out.filter(it => {
+    const p = holdItemPnlUsd(it);
+    return p != null ? p < 0 : (it.pnlBnb != null && Number(it.pnlBnb) < 0);
+  });
+  else if (pf === 'known') out = out.filter(it => it.pnlUsd != null || it.pnlBnb != null);
+  else if (pf === 'unk') out = out.filter(it => it.pnlUsd == null && it.pnlBnb == null
+    && it.platform !== 'native' && it.platform !== 'quote');
+  return out;
+}
+
+function sortHoldItems(items, forceMode) {
+  const mode = forceMode || S.holdSort || 'value-desc';
+  if (mode === 'group') return sortHoldItems(items, 'value-desc');
+  const arr = items.slice();
+  const keyNum = (it, kind) => {
+    if (kind === 'value') {
+      const v = holdItemValueUsd(it);
+      return v == null ? -Infinity : v;
+    }
+    if (kind === 'pnl') {
+      const p = holdItemPnlUsd(it);
+      if (p != null) return p;
+      if (it.pnlBnb != null && Number.isFinite(Number(it.pnlBnb))) {
+        return Number(it.pnlBnb) * (S.holdings?.meta?.bnbUsd || 0);
+      }
+      return -Infinity;
+    }
+    if (kind === 'pnlpct') {
+      const p = holdItemPnlPct(it);
+      return p == null ? -Infinity : p;
+    }
+    return 0;
+  };
+  const [kind, dir] = mode.split('-');
+  const mul = dir === 'asc' ? 1 : -1;
+  arr.sort((a, b) => {
+    const av = keyNum(a, kind);
+    const bv = keyNum(b, kind);
+    if (av === bv) return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+    if (av === -Infinity && bv !== -Infinity) return 1;
+    if (bv === -Infinity && av !== -Infinity) return -1;
+    return (av - bv) * mul;
+  });
+  return arr;
+}
+
+function makeHoldRow(it) {
+  const tr = document.createElement('tr');
+  tr.className = 'hold-row' + (it.tradeable === false ? ' blocked' : '');
+  const plat = it.platform || '?';
+  const pad = (it.gangPad || '').toLowerCase();
+  const padLbl = pad === 'u' ? 'U' : pad === 's' ? 'S' : pad;
+  const valN = holdItemValueUsd(it);
+  const valHtml = valN != null
+    ? `<span class="h-usd" title="价值 · ${esc(it.valueSource || 'usd')}">${esc(fmtHoldUsd(valN))}</span>`
+    : `<span class="h-usd unk" title="无可靠估值">价值?</span>`;
+  const cost = fmtHoldCost(it);
+  const costHtml = cost
+    ? `<span class="h-cost ${cost.cls}" title="${esc(cost.title || '')}">${esc(cost.text)}</span>`
+    : '—';
+  const pnl = fmtHoldPnl(it);
+  const pnlHtml = pnl
+    ? `<span class="h-pnl ${pnl.cls}" title="${esc(pnl.title || '')}">${esc(pnl.text)}</span>`
+    : '—';
+  const nameHtml = it.name && it.symbol && String(it.name) !== String(it.symbol)
+    ? `<span class="h-name" title="${esc(it.name)}">${esc(it.name)}</span> <span class="h-sym">${esc(it.symbol)}</span>`
+    : `<span class="h-sym" title="${esc(it.name || '')}">${esc(it.symbol || '?')}</span>`;
+  tr.innerHTML = `
+    <td class="col-plat"><span class="h-plat ${esc(plat)}">${esc(String(plat).toUpperCase())}</span>${padLbl ? ` <span class="h-pad">${esc(padLbl)}</span>` : ''}</td>
+    <td class="col-name">${nameHtml}</td>
+    <td class="col-amt"><span class="h-amt">${esc(it.amountDisplay || fmtAmtHold(it.amount))}${it.unit === 'shares' ? ' 份' : ''}</span></td>
+    <td class="col-val num">${valHtml}</td>
+    <td class="col-cost num">${costHtml}</td>
+    <td class="col-pnl num">${pnlHtml}</td>
+    <td class="col-ca"><button type="button" class="h-ca" title="${esc(it.address || '')}">${esc(it.shortCa || '—')}</button></td>
+    <td class="col-act"></td>
+  `;
+  const caBtn = tr.querySelector('.h-ca');
+  caBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    const copy = it.tradeCa || it.address;
+    if (copy && copy !== 'BNB') copyCa(copy);
+  });
+  const act = tr.querySelector('.col-act');
+  if (it.address && it.address !== 'BNB' && plat !== 'native' && plat !== 'quote') {
+    const sell = document.createElement('button');
+    sell.type = 'button';
+    sell.className = 'h-sell';
+    const can = it.tradeable !== false;
+    sell.textContent = can ? `卖 ${getSellAmount()}` : '不可卖';
+    sell.disabled = !can;
+    const sellCaHint = (it.platform === 'flap' && it.market && !it.graduated) ? it.market : (it.tradeCa || it.address);
+    const pathHint = it.tradePath === 'gang-cli' ? ` · gang CLI (${it.gangPad || '?'})` : '';
+    sell.title = can
+      ? `卖出 ${getSellAmount()} · ${sellCaHint}${pathHint}`
+      : (it.untradeableReason || '不可交易');
+    sell.addEventListener('click', async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!can) { toast(it.untradeableReason || '不可卖', 'err'); return; }
+      const fakeCard = document.createElement('div');
+      fakeCard.className = 'card';
+      const sellCa = (it.platform === 'flap' && it.market && !it.graduated)
+        ? it.market
+        : (it.tradeCa || it.address);
+      await doTrade('sell', fakeCard, sellCa, sell, {
+        platform: it.platform, track: it.track, graduated: it.graduated,
+        market: it.market, tradeCa: sellCa, address: it.address,
+        tradeable: it.tradeable, untradeableReason: it.untradeableReason,
+        symbol: it.symbol, gangPad: it.gangPad, tradePath: it.tradePath,
+      });
+      refreshHoldings(true);
+    });
+    act.append(sell);
+    if (Number(it.amount) > 0) {
+      const xfer = document.createElement('button');
+      xfer.type = 'button';
+      xfer.className = 'h-xfer';
+      xfer.textContent = '转';
+      xfer.title = `转全部到主钱包 ${S.mainWalletShort || shortCa(S.mainWallet)}`;
+      xfer.addEventListener('click', async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const xferCa = it.tradeCa || it.address;
+        await doTransfer(xferCa, xfer, {
+          platform: it.platform, track: it.track, graduated: it.graduated,
+          tradeCa: xferCa, address: it.address, symbol: it.symbol,
+        }, { max: true, percent: 100 });
+      });
+      act.append(xfer);
+    }
+  }
+  tr.addEventListener('click', e => {
+    if (e.target.closest('.h-sell, .h-xfer, .h-ca, .col-act')) return;
+    if (!it.address || it.address === 'BNB' || it.platform === 'native' || it.platform === 'quote') return;
+    openDetailFromHolding(it);
+  });
+  return tr;
+}
+
+function holdCardEl(it) {
+  const el = document.createElement('article');
+  el.className = 'card hold-card' + (it.tradeable === false ? ' untradeable' : '');
+  el.dataset.platform = it.platform || '';
+  el.dataset.ca = it.address || '';
+  el.dataset.tradeCa = it.tradeCa || it.address || '';
+
+  const plat = it.platform || '?';
+  const pad = (it.gangPad || '').toLowerCase();
+  const padLbl = pad === 'u' ? 'U' : pad === 's' ? 'S' : pad;
+  const valN = holdItemValueUsd(it);
+  const cost = fmtHoldCost(it);
+  const pnl = fmtHoldPnl(it);
+  const qty = esc(it.amountDisplay || fmtAmtHold(it.amount)) + (it.unit === 'shares' ? ' 份' : '');
+  const name = it.name || it.symbol || '?';
+  const sym = it.symbol || '?';
+
+  // Compact row: logo | metrics+name | actions (fills full card width)
+  el.append(logoEl(it));
+
+  const info = document.createElement('div');
+  info.className = 'info';
+  info.innerHTML = `
+    <div class="row1">
+      <span class="name" title="${esc(name)}">${esc(name)}</span>
+      <span class="sym">$${esc(sym)}</span>
+      <span class="tag ${esc(plat)}">${esc(String(plat).toUpperCase())}</span>
+      ${padLbl ? `<span class="tag pad">${esc(padLbl)}</span>` : ''}
+      ${it.tradeable === false ? `<span class="tag blocked" title="${esc(it.untradeableReason || '')}">不可卖</span>` : ''}
+    </div>
+    <div class="stats hold-stats">
+      <span class="hold-metric">数量 <b>${qty}</b></span>
+      <span class="hold-sep">·</span>
+      <span class="hold-metric">价值 <b class="${valN == null ? 'unk' : ''}">${valN != null ? esc(fmtHoldUsd(valN)) : '?'}</b></span>
+      ${cost ? `<span class="hold-sep">·</span><span class="hold-metric hold-cost-stat ${esc(cost.cls)}" title="${esc(cost.title || '')}">${esc(cost.text)}</span>` : ''}
+      <span class="hold-pnl-stat ${pnl ? esc(pnl.cls) : 'unk'}" title="${pnl ? esc(pnl.title || '') : ''}">${pnl ? esc(pnl.text) : '盈亏?'}</span>
+      <span class="ca" data-ca="${esc(it.tradeCa || it.address || '')}" title="${esc(it.address || '')}（点击复制）">${esc(it.shortCa || shortCa(it.address || '') || '—')}</span>
+    </div>`;
+  el.append(info);
+
+  const caEl = info.querySelector('.stats .ca');
+  if (caEl) {
+    caEl.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ca = caEl.dataset.ca || it.tradeCa || it.address || '';
+      if (ca && ca !== 'BNB') copyCa(ca);
+    });
+  }
+
+  const side = document.createElement('div');
+  side.className = 'side';
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+
+  if (it.address && it.address !== 'BNB' && plat !== 'native' && plat !== 'quote') {
+    const sell = document.createElement('button');
+    sell.type = 'button';
+    sell.className = 'btn-sell h-sell';
+    const can = it.tradeable !== false;
+    sell.textContent = can ? `卖 ${getSellAmount()}` : '不可卖';
+    sell.disabled = !can;
+    const sellCaHint = (it.platform === 'flap' && it.market && !it.graduated) ? it.market : (it.tradeCa || it.address);
+    sell.title = can ? `卖出 ${getSellAmount()} · ${sellCaHint}` : (it.untradeableReason || '不可交易');
+    sell.addEventListener('click', async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!can) { toast(it.untradeableReason || '不可卖', 'err'); return; }
+      const sellCa = (it.platform === 'flap' && it.market && !it.graduated)
+        ? it.market
+        : (it.tradeCa || it.address);
+      await doTrade('sell', el, sellCa, sell, {
+        platform: it.platform, track: it.track, graduated: it.graduated,
+        market: it.market, tradeCa: sellCa, address: it.address,
+        tradeable: it.tradeable, untradeableReason: it.untradeableReason,
+        symbol: it.symbol, gangPad: it.gangPad, tradePath: it.tradePath,
+      });
+      refreshHoldings(true);
+    });
+    actions.append(sell);
+
+    if (Number(it.amount) > 0) {
+      const xfer = document.createElement('button');
+      xfer.type = 'button';
+      xfer.className = 'btn-xfer h-xfer';
+      xfer.textContent = '转';
+      xfer.title = `转全部到主钱包 ${S.mainWalletShort || shortCa(S.mainWallet)}`;
+      xfer.addEventListener('click', async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const xferCa = it.tradeCa || it.address;
+        await doTransfer(xferCa, xfer, {
+          platform: it.platform, track: it.track, graduated: it.graduated,
+          tradeCa: xferCa, address: it.address, symbol: it.symbol,
+        }, { max: true, percent: 100 });
+      });
+      actions.append(xfer);
+    }
+  }
+  side.append(actions);
+  el.append(side);
+
+  el.addEventListener('click', e => {
+    if (e.target.closest('.btn-sell, .btn-xfer, .h-sell, .h-xfer, .ca, .actions, .xfer-row')) return;
+    if (!it.address || it.address === 'BNB' || it.platform === 'native' || it.platform === 'quote') return;
+    openDetailFromHolding(it);
+  });
+  return el;
+}
+
 function holdItemValueUsd(it) {
   const n = it?.valueUsd != null ? it.valueUsd : it?.usd;
   return n != null && Number.isFinite(Number(n)) ? Number(n) : null;
@@ -1223,67 +1558,84 @@ function makeHoldChip(it) {
 }
 
 function renderHoldings() {
+  const list = $('#list-hold');
   const box = $('#holdings-list');
+  const tbody = $('#holdings-tbody');
   const meta = $('#holdings-meta');
-  if (!box || !meta) return;
+  const cnt = $('#cnt-hold');
   const h = S.holdings;
   if (!h) {
-    meta.textContent = '加载中…';
+    if (meta) meta.textContent = '加载中…';
+    if (cnt) cnt.textContent = '…';
     return;
   }
   if (!h.ok && !(h.items && h.items.length)) {
-    meta.textContent = h.error || '持仓读取失败';
-    box.innerHTML = '';
+    if (meta) meta.textContent = h.error || '持仓读取失败';
+    if (cnt) cnt.textContent = '0';
+    if (list) list.innerHTML = '';
+    if (tbody) tbody.innerHTML = '';
+    if (box) { box.innerHTML = ''; box.hidden = true; }
     return;
   }
   const t = h.updatedAt ? new Date(h.updatedAt) : null;
-  const tot = h.totalValueUsd != null && Number.isFinite(h.totalValueUsd)
-    ? ` · 合计 ${fmtHoldUsd(h.totalValueUsd)}` + (h.meta?.unvaluedCount ? `（${h.meta.unvaluedCount} 项无估值）` : '')
-    : (h.meta?.unvaluedCount ? ` · ${h.meta.unvaluedCount} 项无估值` : '');
-  meta.textContent = `${h.items.length} 项` + tot + (t ? ` · ${t.toLocaleTimeString('zh-CN', { hour12: false })}` : '')
-    + (h.meta?.bawError ? ` · baw: ${h.meta.bawError}` : '');
-  box.innerHTML = '';
-  if (!h.items.length) {
-    const e = document.createElement('div');
-    e.className = 'holdings-empty';
-    e.textContent = '当前无曲线/相关持仓（baw + 看板链上探测）';
-    box.append(e);
-    return;
+  const filtered = filterHoldItems(h.items || []);
+  let sumFilt = 0, nVal = 0;
+  for (const it of filtered) {
+    const v = holdItemValueUsd(it);
+    if (v != null) { sumFilt += v; nVal += 1; }
   }
-
-  const buckets = Object.fromEntries(HOLD_GROUPS.map(g => [g.key, []]));
-  for (const it of h.items) {
-    buckets[holdGroupKey(it)].push(it);
+  const totAll = h.totalValueUsd != null && Number.isFinite(h.totalValueUsd)
+    ? fmtHoldUsd(h.totalValueUsd) : null;
+  if (meta) {
+    meta.textContent = (filtered.length !== (h.items || []).length
+      ? `筛选 ${filtered.length}/${(h.items || []).length} 项`
+      : `${(h.items || []).length} 项`)
+      + (nVal ? ` · 合计 ${fmtHoldUsd(sumFilt)}` : '')
+      + (totAll ? ` · 全仓 ${totAll}` : '')
+      + (h.meta?.unvaluedCount ? `（${h.meta.unvaluedCount} 无估值）` : '')
+      + (t ? ` · ${t.toLocaleTimeString('zh-CN', { hour12: false })}` : '')
+      + (h.meta?.bawError ? ` · baw: ${h.meta.bawError}` : '');
   }
+  if (cnt) cnt.textContent = String(filtered.length);
 
-  for (const g of HOLD_GROUPS) {
-    const items = buckets[g.key];
-    if (!items.length) continue;
-    let sum = 0;
-    let valued = 0;
-    for (const it of items) {
-      const v = holdItemValueUsd(it);
-      if (v != null) { sum += v; valued += 1; }
+  const paintList = (target) => {
+    if (!target) return;
+    target.innerHTML = '';
+    if (!(h.items || []).length) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = '当前无曲线/相关持仓';
+      target.append(e);
+      return;
     }
-    const sec = document.createElement('div');
-    sec.className = `hold-group hold-group-${g.platClass}`;
-    sec.dataset.group = g.key;
-    const head = document.createElement('div');
-    head.className = 'hold-group-h';
-    const sub = valued
-      ? `合计 ${fmtHoldUsd(sum)}${valued < items.length ? `（${items.length - valued} 无估值）` : ''}`
-      : `${items.length} 项`;
-    head.innerHTML = `
-      <span class="hold-group-label ${esc(g.platClass)}">${esc(g.label)}</span>
-      <span class="hold-group-count">${items.length}</span>
-      <span class="hold-group-sum">${esc(sub)}</span>
-    `;
-    const row = document.createElement('div');
-    row.className = 'hold-group-chips';
-    for (const it of items) row.append(makeHoldChip(it));
-    sec.append(head, row);
-    box.append(sec);
-  }
+    if (!filtered.length) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = '没有符合筛选的持仓';
+      target.append(e);
+      return;
+    }
+    if ((S.holdSort || 'value-desc') === 'group') {
+      const buckets = Object.fromEntries(HOLD_GROUPS.map(g => [g.key, []]));
+      for (const it of filtered) buckets[holdGroupKey(it)].push(it);
+      for (const g of HOLD_GROUPS) {
+        const items = sortHoldItems(buckets[g.key], 'value-desc');
+        if (!items.length) continue;
+        const head = document.createElement('div');
+        head.className = 'hold-col-group';
+        head.innerHTML = `<span class="hold-group-label ${esc(g.platClass)}">${esc(g.label)}</span><span class="hold-group-count">${items.length}</span>`;
+        target.append(head);
+        for (const it of items) target.append(holdCardEl(it));
+      }
+    } else {
+      for (const it of sortHoldItems(filtered)) target.append(holdCardEl(it));
+    }
+  };
+  paintList(list);
+
+  // Top strip table optional; keep empty/hidden — column is primary
+  if (tbody) tbody.innerHTML = '';
+  if (box) { box.innerHTML = ''; box.hidden = true; }
 }
 
 function fmtAmtHold(n) {
@@ -1590,6 +1942,22 @@ function syncSellHint() {
   } else {
     S.payKey = 'BNB';
   }
+
+  
+  const wireHoldSel = (id, key, storage, fallback) => {
+    const el = $(id);
+    if (!el) return;
+    el.value = S[key] || fallback;
+    el.addEventListener('change', () => {
+      S[key] = el.value || fallback;
+      try { localStorage.setItem(storage, S[key]); } catch (_) {}
+      renderHoldings();
+    });
+  };
+  wireHoldSel('#hold-plat', 'holdPlat', 'curve-hold-plat', 'all');
+  wireHoldSel('#hold-val', 'holdVal', 'curve-hold-val', 'all');
+  wireHoldSel('#hold-pnl', 'holdPnl', 'curve-hold-pnl', 'all');
+  wireHoldSel('#hold-sort', 'holdSort', 'curve-hold-sort', 'value-desc');
 
   $$('#pay-chips .pay-chip').forEach(btn => {
     btn.addEventListener('click', () => {
