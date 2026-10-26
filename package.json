@@ -1,0 +1,12 @@
+{
+  "name": "ai-wallet-curve-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local AI-wallet-only curve terminal board (FLAP agent / GANG / FOUR agent)",
+  "scripts": {
+    "start": "node server.mjs",
+    "board": "node server.mjs"
+  },
+  "engines": { "node": ">=18" }
+}

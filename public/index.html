@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SENSU</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>SENSU</h1>
+      <span class="badge">Agent 专属 · 可买卖</span>
+    </div>
+    <div class="wallet" id="wallet" title="Binance AI 钱包">
+      <span class="wallet-label">AI钱包</span>
+      <span class="wallet-id" id="wallet-id">—</span>
+      <span class="wallet-addr" id="wallet-addr">未连接</span>
+      <span class="xfer-dest" id="xfer-dest" title="转主钱包固定收款地址">转账→0xA29f…96D5</span>
+    </div>
+    <div class="trade-bar" id="trade-bar" title="同一行选支付币与数量；% 可选">
+      <div class="trade-row" id="buy-row">
+        <span class="trade-label">买</span>
+        <div class="pay-chips" id="pay-chips" role="group" aria-label="支付币">
+          <button type="button" class="pay-chip on" data-pay="BNB">BNB</button>
+          <button type="button" class="pay-chip" data-pay="GANG">GANG</button>
+          <button type="button" class="pay-chip" data-pay="BNCB">BNCB</button>
+          <button type="button" class="pay-chip" data-pay="NVDAB">NVDAB</button>
+        </div>
+        <label class="trade-field">
+          <input type="text" id="pay-ca" placeholder="其它 CA / 符号" spellcheck="false" autocomplete="off" />
+        </label>
+        <span class="trade-sep" aria-hidden="true">·</span>
+        <div class="amt-chips" id="amt-chips" role="group" aria-label="支付数量">
+          <button type="button" class="amt-chip" data-amt="0.01">0.01</button>
+          <button type="button" class="amt-chip on" data-amt="0.05">0.05</button>
+          <button type="button" class="amt-chip" data-amt="0.1">0.1</button>
+          <button type="button" class="amt-chip" data-amt="0.5">0.5</button>
+        </div>
+        <label class="trade-field">
+          <input type="number" id="buy-amt" step="any" min="0" placeholder="自定义数量" inputmode="decimal" />
+        </label>
+        <span class="trade-sep muted" aria-hidden="true">或 %</span>
+        <div class="size-chips" id="size-chips" role="group" aria-label="市值比例（可选）">
+          <button type="button" class="size-chip" data-pct="1">1%</button>
+          <button type="button" class="size-chip" data-pct="0.5">0.5%</button>
+          <button type="button" class="size-chip" data-pct="0.2">0.2%</button>
+        </div>
+        <label class="trade-field">
+          <input type="number" id="buy-pct" step="any" min="0" placeholder="自定义 %" inputmode="decimal" />
+        </label>
+        <span class="trade-hint" id="buy-picked">0.05 BNB</span>
+      </div>
+      <div class="trade-row" id="sell-row">
+        <span class="trade-label">卖</span>
+        <div class="sell-chips" id="sell-chips" role="group" aria-label="卖出比例">
+          <button type="button" class="sell-chip" data-pct="10">10%</button>
+          <button type="button" class="sell-chip" data-pct="25">25%</button>
+          <button type="button" class="sell-chip on" data-pct="50">50%</button>
+          <button type="button" class="sell-chip" data-pct="75">75%</button>
+          <button type="button" class="sell-chip" data-pct="100">100%</button>
+        </div>
+        <span class="trade-hint" id="sell-picked">50%</span>
+      </div>
+    </div>
+    <div class="meta" id="meta">
+      <span id="rpc">RPC —</span>
+      <span id="bnb">BNB —</span>
+      <span id="updated">更新 —</span>
+    </div>
+    <div class="filters" id="filters">
+      <button type="button" class="chip on" data-p="all">全部</button>
+      <button type="button" class="chip" data-p="flap">FLAP</button>
+      <button type="button" class="chip" data-p="gang">GANG</button>
+      <button type="button" class="chip" data-p="four">FOUR</button>
+    </div>
+  </header>
+
+  <section class="holdings" id="holdings" aria-label="AI钱包持仓">
+    <div class="holdings-h">
+      <span class="holdings-title">持仓</span>
+      <span class="holdings-meta" id="holdings-meta">加载中…</span>
+    </div>
+    <div class="holdings-list" id="holdings-list"></div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="detail-backdrop" class="detail-backdrop" hidden></div>
+  <aside id="detail-drawer" class="detail-drawer" hidden aria-hidden="true">
+    <header class="detail-h">
+      <div class="detail-title">
+        <div class="detail-logo" id="detail-logo"></div>
+        <div class="detail-names">
+          <div class="detail-name-row">
+            <span class="detail-name" id="detail-name">—</span>
+            <span class="detail-sym" id="detail-sym"></span>
+          </div>
+          <div class="detail-tags" id="detail-tags"></div>
+          <button type="button" class="detail-ca" id="detail-ca" title="复制 CA">—</button>
+        </div>
+      </div>
+      <button type="button" class="detail-close" id="detail-close" aria-label="关闭">×</button>
+    </header>
+    <section class="detail-hold" id="detail-hold" aria-label="持仓">
+      <div class="detail-sec-h">持仓</div>
+      <div class="detail-hold-body" id="detail-hold-body">加载中…</div>
+    </section>
+    <section class="detail-chart" aria-label="K线">
+      <div class="detail-sec-h">
+        <span>K线</span>
+        <div class="kline-res" id="kline-res" role="group" aria-label="周期">
+          <button type="button" class="kres on" data-res="1m" data-hours="2">1m·2h</button>
+          <button type="button" class="kres" data-res="5m" data-hours="6">5m·6h</button>
+          <button type="button" class="kres" data-res="1m" data-hours="6">1m·6h</button>
+        </div>
+        <span class="kline-meta" id="kline-meta"></span>
+      </div>
+      <canvas id="kline-canvas" width="640" height="260"></canvas>
+      <div class="kline-empty" id="kline-empty" hidden>暂无K线</div>
+    </section>
+    <section class="detail-trade" aria-label="买卖">
+      <div class="detail-sec-h">买卖 <span class="detail-trade-hint" id="detail-trade-hint">用顶栏支付币/数量</span></div>
+      <div class="detail-trade-actions">
+        <button type="button" class="btn-buy" id="detail-buy">买</button>
+        <button type="button" class="btn-sell" id="detail-sell">卖</button>
+      </div>
+      <div class="xfer-row detail-xfer" id="detail-xfer" hidden>
+        <div class="xfer-chips" role="group" aria-label="转主钱包比例">
+          <button type="button" class="xfer-chip" data-pct="25">25%</button>
+          <button type="button" class="xfer-chip" data-pct="50">50%</button>
+          <button type="button" class="xfer-chip on" data-pct="100">100%</button>
+        </div>
+        <label class="xfer-amt-wrap">
+          <input type="number" id="detail-xfer-amt" class="xfer-amt" step="any" min="0" placeholder="数量" inputmode="decimal" />
+        </label>
+        <button type="button" class="btn-xfer" id="detail-xfer-btn">转主钱包</button>
+      </div>
+      <div class="trade-status" id="detail-trade-status" hidden></div>
+    </section>
+    <section class="detail-holders" id="detail-holders" aria-label="持有人">
+      <div class="detail-sec-h">持有人 <span class="holders-meta" id="holders-meta"></span></div>
+      <div class="detail-holders-body" id="detail-holders-body">加载中…</div>
+    </section>
+  </aside>
+
+
+  <div class="board-tools" id="board-tools" aria-label="列表筛选">
+    <div class="bt-row">
+      <span class="bt-label" title="按报价底池筛选">底池筛选</span>
+      <div class="quote-chips" id="quote-chips" role="group" aria-label="底池筛选">
+        <button type="button" class="quote-chip on" data-quote="all">全部</button>
+      </div>
+      <label class="bt-search">
+        <span class="bt-label">搜索</span>
+        <input type="search" id="ticker-search" placeholder="TICKER / 名字 / CA" spellcheck="false" autocomplete="off" />
+      </label>
+    </div>
+  </div>
+
+  <main class="board">
+    <section class="col" data-col="new">
+      <header class="col-h">
+        <h2>新创建</h2>
+        <label class="col-sort-wrap" title="新创建排序">
+          <span class="sr-only">排序</span>
+          <select id="new-sort" class="col-sort" aria-label="新创建排序">
+            <option value="created">创建时间</option>
+            <option value="mc">市值排行</option>
+            <option value="holders">持有人排行</option>
+            <option value="volume">交易额排行</option>
+          </select>
+        </label>
+        <span class="count" id="cnt-new">0</span>
+      </header>
+      <div class="list" id="list-new"></div>
+    </section>
+    <section class="col" data-col="near">
+      <header class="col-h">
+        <h2 title="非毕业曲线 · 市值≥$10K（或进度达标）">即将打满</h2>
+        <span class="col-sub" id="near-sub">市值≥10K</span>
+        <label class="col-sort-wrap" title="即将打满排序">
+          <span class="sr-only">排序</span>
+          <select id="near-sort" class="col-sort" aria-label="即将打满排序">
+            <option value="mc">市值排行</option>
+            <option value="created">创建时间</option>
+            <option value="holders">持有人排行</option>
+            <option value="volume">交易额排行</option>
+          </select>
+        </label>
+        <span class="count" id="cnt-near">0</span>
+      </header>
+      <div class="list" id="list-near"></div>
+    </section>
+    <section class="col" data-col="graduated">
+      <header class="col-h">
+        <h2>已开盘</h2>
+        <label class="col-sort-wrap" title="已开盘排序（高→低）">
+          <span class="sr-only">排序</span>
+          <select id="grad-sort" class="col-sort" aria-label="已开盘排序">
+            <option value="mc">市值排行</option>
+            <option value="holders">持有人排行</option>
+            <option value="volume">交易额排行</option>
+            <option value="created">创建时间</option>
+          </select>
+        </label>
+        <span class="count" id="cnt-graduated">0</span>
+      </header>
+      <div class="list" id="list-graduated"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>FLAP / GANG / FOUR Agent · 买卖经 aiwb（先 check 再买）。风险币可能需 App 确认；未毕业曲线卖出可能被拒或需等毕业。</span>
+    <span id="err" class="err"></span>
+  </footer>
+  <script src="/app.js"></script>
+</body>
+</html>
