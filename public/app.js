@@ -1334,6 +1334,22 @@ function makeHoldRow(it) {
   return tr;
 }
 
+
+function resolveHoldLogo(it) {
+  if (it?.logoUrl) return it.logoUrl;
+  const ca = String(it?.tradeCa || it?.address || '').toLowerCase();
+  if (!ca || ca === 'bnb') return null;
+  const cols = [S?.board?.new, S?.board?.near, S?.board?.graduated].filter(Boolean);
+  for (const col of cols) {
+    for (const c of col) {
+      const a = String(c.address || '').toLowerCase();
+      const t = String(c.tradeCa || '').toLowerCase();
+      const m = String(c.market || '').toLowerCase();
+      if (a === ca || t === ca || m === ca) return c.logoUrl || c.logo || null;
+    }
+  }
+  return null;
+}
 function holdCardEl(it) {
   const el = document.createElement('article');
   el.className = 'card hold-card' + (it.tradeable === false ? ' untradeable' : '');
@@ -1352,7 +1368,8 @@ function holdCardEl(it) {
   const sym = it.symbol || '?';
 
   // Compact row: logo | metrics+name | actions (fills full card width)
-  el.append(logoEl(it));
+  const logoIt = { ...it, logoUrl: resolveHoldLogo(it) };
+  el.append(logoEl(logoIt));
 
   const info = document.createElement('div');
   info.className = 'info';

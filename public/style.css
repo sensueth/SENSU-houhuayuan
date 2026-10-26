@@ -847,11 +847,12 @@ body {
   cursor: pointer;
 }
 .card.hold-card > .logo {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  font-size: 12px;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  font-size: 14px;
   align-self: center;
+  flex-shrink: 0;
 }
 .card.hold-card > .info {
   min-width: 0;
