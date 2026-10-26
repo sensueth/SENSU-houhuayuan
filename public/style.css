@@ -840,7 +840,7 @@ body {
 /* Compact holdings cards: logo | name+stats | actions — fills full width, no empty hole */
 .card.hold-card {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
   gap: 6px 10px;
   padding: 10px 12px;
   align-items: start;
