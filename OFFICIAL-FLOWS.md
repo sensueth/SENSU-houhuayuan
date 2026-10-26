@@ -21,7 +21,7 @@ See `GANG-OFFICIAL.md`.
 
 - **Detect**: `curves(token)` on **LaunchpadV2** `0x1B8F3f69DFa0a7F63d308C7EB0Fd38D8b099966E` only.
 - **Buy (WBNB quote)**: wrap BNB → approve WBNB → `buy(coin, quoteAmt, minCoins)`.
-- **Buy (other quote)**: PCS `BNB→quote` → approve → `buy` (3 txs). Cap: `walletRoom` 1%.
+- **Buy (other quote)**: if the wallet holds the quote, approve + `buy` (no hop). If not, spend USDT (or another configured stable) via Pancake V2 **direct** `stable→quote`, then approve + `buy`. Native BNB is not used for that hop. A hop whose quote out is worth under 50% of the spend is not broadcast. Cap: `walletRoom` 1%.
 - **Sell**: approve coin → `sell`; Binance often rates 3/5 → **App confirm** if abnormal=confirm.
 - **Graduated WBNB**: pancake handler; other quotes: two-hop PCS.
 

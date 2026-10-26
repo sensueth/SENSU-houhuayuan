@@ -1,3 +1,12 @@
+import {
+  chooseCurvePay,
+  ADDRESSES,
+  STABLES,
+  stableByAddress,
+  stableByKey,
+  isBnbQuote,
+} from './pay-path.js';
+
 // AI WALLET CURVE — client. Polls /api/board. Buy/sell via POST /api/trade (aiwb + gang CLI for Soft/U/S).
 const KEY = (() => {
   const m = location.search.match(/[?&]k=([a-f0-9]+)/i);
@@ -11,9 +20,11 @@ const KEY = (() => {
 
 const PAY_TOKEN_MAP = {
   BNB: 'BNB',
-  GANG: '0x0c6302401aa5325c2e36f170f52c00b1d220b405',
-  BNCB: '0x4902C5ebc598265Ed2212b559B042De8a5Eeec3f',
-  NVDAB: '0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436',
+  USDT: ADDRESSES.USDT,
+  USDC: ADDRESSES.USDC,
+  GANG: ADDRESSES.GANG,
+  BNCB: ADDRESSES.BNCB,
+  NVDAB: ADDRESSES.NVDAB,
 };
 
 const S = {
@@ -42,7 +53,7 @@ const S = {
   detailHoldersBusy: false,
   holdersByCa: {}, // ca -> { holders, count, at }
   xferPct: 100,   // default 转主钱包 %
-  mainWallet: '' // filled from /api/health,
+  mainWallet: '', // filled from /api/health
   mainWalletShort: '0xA29f…96D5',
 };
 
@@ -185,9 +196,6 @@ function getPayToken() {
   return r;
 }
 
-/** Known quote pay keys we can spend directly (must exist in PAY_TOKEN_MAP). */
-const QUOTE_PAY_KEYS = ['GANG', 'BNCB', 'NVDAB'];
-
 function holdingForPayKey(key) {
   const tok = PAY_TOKEN_MAP[key];
   if (!tok || !S.holdings?.items) return null;
@@ -212,81 +220,101 @@ function payKeyUsdPrice(key) {
   return usd / amt;
 }
 
-function quotePayKeyForCard(coin) {
-  if (!coin) return null;
-  const q = String(coin.quote || '').trim().toUpperCase();
-  if (QUOTE_PAY_KEYS.includes(q) && PAY_TOKEN_MAP[q]) return q;
-  const qa = String(coin.extra?.quoteAddress || coin.quoteAddress || '').toLowerCase();
-  if (qa && /^0x[a-f0-9]{40}$/.test(qa)) {
-    for (const k of QUOTE_PAY_KEYS) {
-      if (String(PAY_TOKEN_MAP[k]).toLowerCase() === qa) return k;
-    }
-  }
+function holdingByAddress(addr) {
+  if (!addr || !S.holdings?.items) return null;
+  const low = String(addr).toLowerCase();
+  return S.holdings.items.find(it => String(it.address || '').toLowerCase() === low) || null;
+}
+
+function holdingUsdPrice(it) {
+  if (!it) return null;
+  const amt = Number(it.amount);
+  const usd = it.valueUsd != null ? Number(it.valueUsd) : (it.usd != null ? Number(it.usd) : null);
+  if (Number.isFinite(amt) && amt > 0 && Number.isFinite(usd) && usd > 0) return usd / amt;
   return null;
 }
 
-/**
- * Prefer paying with the card's quote token when wallet balance covers the buy.
- * Converts abs amount BNB→quote via holdings USD; falls back to BNB if short.
- */
-function preferPayTokenForCard(coin) {
-  const qKey = quotePayKeyForCard(coin);
-  if (!qKey) return { switched: false, key: getPayToken().key, reason: 'quote-not-payabled' };
+/** User-typed #pay-ca is sacred. Auto-filled quote CAs (dataset.auto) may be replaced. */
+function explicitPayCaLocked() {
+  const el = $('#pay-ca');
+  if (!el) return false;
+  if (!el.value.trim()) return false;
+  return el.dataset.auto !== '1';
+}
 
-  const hold = holdingForPayKey(qKey);
-  const bal = hold ? Number(hold.amount) : 0;
-  if (!(bal > 0)) return { switched: false, key: getPayToken().key, reason: `no-${qKey}-balance` };
-
-  const size = getBuySize();
-  const qPx = payKeyUsdPrice(qKey);
-  let need = null;
-
-  if (size.mode === 'pct') {
-    const mc = Number(coin?.mcUsd ?? coin?.fdvUsd);
-    if (Number.isFinite(mc) && mc > 0 && qPx) need = (size.pct / 100) * mc / qPx;
-  } else {
-    const amt = Number(size.amount);
-    const cur = getPayToken();
-    if (cur.key === qKey) need = amt;
-    else if (cur.key === 'BNB' || cur.key === 'WBNB') {
-      const bnbPx = payKeyUsdPrice('BNB') || payKeyUsdPrice('WBNB');
-      if (Number.isFinite(amt) && amt > 0 && bnbPx && qPx) need = (amt * bnbPx) / qPx;
-    } else {
-      const curPx = payKeyUsdPrice(cur.key);
-      if (Number.isFinite(amt) && amt > 0 && curPx && qPx) need = (amt * curPx) / qPx;
-    }
+function quoteInfoForCoin(coin) {
+  if (!coin) return { symbol: null, address: null, usd: null, key: null };
+  const symbol = String(coin.quote || '').trim();
+  const upper = symbol.toUpperCase();
+  let address = coin.quoteAddress || coin.extra?.quoteAddress || null;
+  if (!address && PAY_TOKEN_MAP[upper] && PAY_TOKEN_MAP[upper] !== 'BNB') address = PAY_TOKEN_MAP[upper];
+  if (!address && upper === 'WBNB') address = ADDRESSES.WBNB;
+  let usd = Number(coin.quoteUsd ?? coin.extra?.quoteUsd);
+  if (!(usd > 0) && address) usd = holdingUsdPrice(holdingByAddress(address));
+  if (!(usd > 0) && (isBnbQuote(symbol, address) || upper === 'BNB' || upper === 'WBNB')) {
+    usd = payKeyUsdPrice('BNB') || Number(S.board?.meta?.bnbUsd);
   }
+  if (!(usd > 0) && (stableByKey(upper) || stableByAddress(address))) usd = 1;
+  const key = Object.keys(PAY_TOKEN_MAP).find(k => String(PAY_TOKEN_MAP[k]).toLowerCase() === String(address || '').toLowerCase())
+    || (upper && upper !== '?' ? upper : null);
+  return { symbol: symbol || null, address: address || null, usd: usd > 0 ? usd : null, key };
+}
 
-  if (!(Number.isFinite(need) && need > 0)) {
-    need = Math.min(bal, Math.max(bal * 0.05, 1));
-  }
-  if (bal + 1e-12 < need) {
-    // Quote too small for this size — fall back to BNB (aiwb will swap to quote).
-    const prevKey = S.payKey;
-    const curKey = getPayToken().key;
-    if (prevKey === qKey || curKey === qKey) {
-      S.payKey = 'BNB';
-      const payCa = $('#pay-ca');
-      if (payCa) payCa.value = '';
-      syncPayUI();
-      syncBuyUI();
-      syncBuyButtons();
-      return { switched: true, key: 'BNB', reason: `insufficient-${qKey}`, bal, need, fallback: true };
-    }
-    return { switched: false, key: curKey, reason: `insufficient-${qKey}`, bal, need, fallback: false };
-  }
+function payTokenUsd(pay, coin) {
+  if (!pay) return null;
+  const st = stableByAddress(pay.token) || stableByKey(pay.key);
+  if (st) return st.usd;
+  if (pay.token === 'BNB' || pay.key === 'BNB') return payKeyUsdPrice('BNB') || Number(S.board?.meta?.bnbUsd) || null;
+  const q = quoteInfoForCoin(coin);
+  if (q.address && String(pay.token).toLowerCase() === String(q.address).toLowerCase() && q.usd) return q.usd;
+  return holdingUsdPrice(holdingByAddress(pay.token)) || payKeyUsdPrice(pay.key);
+}
 
-  const prevKey = S.payKey;
-  S.payKey = qKey;
+function stableBalanceMap() {
+  const out = {};
+  for (const st of STABLES) {
+    const h = holdingByAddress(st.address);
+    out[st.key] = h && Number(h.amount) > 0 ? Number(h.amount) : 0;
+  }
+  return out;
+}
+
+function clearAutoPayCa() {
   const payCa = $('#pay-ca');
-  if (payCa) payCa.value = '';
+  if (!payCa || payCa.dataset.auto !== '1') return;
+  payCa.value = '';
+  payCa.dataset.auto = '';
+  sessionStorage.setItem('curve-pay-ca-auto', '');
+}
 
-  // Quote-direct needs absolute quote units. Convert both abs and % → abs once we know `need`.
-  if (Number.isFinite(need) && need > 0 && (size.mode !== 'pct' ? prevKey !== qKey : true)) {
-    let rounded = need;
-    if (need >= 1000) rounded = Math.round(need);
-    else if (need >= 10) rounded = Math.round(need * 100) / 100;
-    else rounded = Math.round(need * 1e4) / 1e4;
+/**
+ * Quote if the wallet covers it, else USDT/USDC, else BNB only for a BNB quote.
+ * Never clears a user-typed pay CA and never switches that CA to BNB.
+ */
+function applyPayDecision(decision) {
+  if (!decision || decision.action !== 'use' || decision.keepExplicit) return;
+  if (!decision.switched && decision.rewriteAmount == null) return;
+  const payCa = $('#pay-ca');
+  const knownKey = Object.keys(PAY_TOKEN_MAP).find(k => {
+    const v = PAY_TOKEN_MAP[k];
+    return String(v).toLowerCase() === String(decision.payToken || '').toLowerCase();
+  });
+  if (decision.path === 'bnb' || decision.payToken === 'BNB') {
+    S.payKey = 'BNB';
+    clearAutoPayCa();
+  } else if (knownKey) {
+    S.payKey = knownKey;
+    clearAutoPayCa();
+  } else if (decision.payToken && /^0x/i.test(String(decision.payToken))) {
+    S.payKey = 'custom';
+    if (payCa && !explicitPayCaLocked()) {
+      payCa.value = decision.payToken;
+      payCa.dataset.auto = '1';
+      sessionStorage.setItem('curve-pay-ca-auto', '1');
+    }
+  }
+  if (decision.rewriteAmount != null && Number(decision.rewriteAmount) > 0) {
+    const rounded = decision.rewriteAmount;
     S.buyMode = 'abs';
     S.buyAmt = rounded;
     S.buyPct = 0;
@@ -297,11 +325,43 @@ function preferPayTokenForCard(coin) {
     $$('#amt-chips .amt-chip').forEach(b => b.classList.toggle('on', Number(b.dataset.amt) === rounded));
     $$('#size-chips .size-chip').forEach(b => b.classList.remove('on'));
   }
-
   syncPayUI();
   syncBuyUI();
   syncBuyButtons();
-  return { switched: prevKey !== qKey, key: qKey, reason: 'ok', need, bal };
+}
+
+function payForDecision() {
+  if (explicitPayCaLocked()) return getPayToken();
+  // Auto-filled quote CA is a hint from the last buy, not a typed pay token.
+  const el = $('#pay-ca');
+  if (el && el.dataset.auto === '1') return { key: 'BNB', token: 'BNB', label: 'BNB' };
+  return getPayToken();
+}
+
+function preferPayTokenForCard(coin) {
+  const pay = payForDecision();
+  const q = quoteInfoForCoin(coin);
+  const size = getBuySize();
+  const decision = chooseCurvePay({
+    quoteSymbol: q.symbol,
+    quoteAddress: q.address,
+    quoteUsd: q.usd,
+    quoteKey: q.key,
+    explicit: explicitPayCaLocked(),
+    payToken: pay.token,
+    payKey: pay.key,
+    payLabel: pay.label,
+    sizeMode: size.mode === 'pct' ? 'pct' : 'abs',
+    sizeAmount: size.mode === 'abs' ? Number(size.amount) : null,
+    sizePct: size.mode === 'pct' ? size.pct : null,
+    mcUsd: Number(coin?.mcUsd ?? coin?.fdvUsd),
+    bnbUsd: payKeyUsdPrice('BNB') || Number(S.board?.meta?.bnbUsd),
+    quoteBalance: q.address ? (Number(holdingByAddress(q.address)?.amount) || 0) : 0,
+    stableBalances: stableBalanceMap(),
+    selectedPayUsd: payTokenUsd(pay, coin),
+  });
+  if (decision.action === 'use') applyPayDecision(decision);
+  return decision;
 }
 
 function getBuySize() {
@@ -493,19 +553,22 @@ async function doTrade(side, card, ca, btn, coin = null) {
   let payToken;
   let payLabel;
   if (side === 'buy') {
-    // Prefer card quote (GANG/BNCB/…) when wallet holds enough — avoid BNB→quote hop.
+    // Quote if it covers, else USDT, else BNB only for a BNB quote.
+    // A typed #pay-ca (USDT) is never cleared and never replaced with BNB.
     const pref = preferPayTokenForCard(coin);
+    if (pref.action === 'refuse') {
+      const msg = pref.error || '已拒绝用 BNB 支付';
+      toast(msg, 'err');
+      setCardStatus(card, msg, 'err');
+      return;
+    }
     if (pref.switched) {
-      toast(`支付已切到 ${pref.key}（底池报价币）`, 'ok');
-    } else if (pref.reason && String(pref.reason).startsWith('insufficient-')) {
-      const qk = quotePayKeyForCard(coin) || '';
-      if (pref.fallback || pref.key === 'BNB') {
-        const balS = Number.isFinite(pref.bal) ? pref.bal.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '?';
-        const needS = Number.isFinite(pref.need) ? pref.need.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '?';
-        toast(`${qk} 不足（有 ${balS} / 需 ${needS}），已改用 BNB`, 'pending');
-      } else {
-        toast(`钱包 ${qk} 不足本次买入，仍用 ${getPayToken().label}（可能先换报价币）`, 'pending');
-      }
+      const amtNote = pref.rewriteAmount != null ? ` ${pref.rewriteAmount}` : '';
+      if (pref.path === 'quote-direct') toast(`支付改为${amtNote} ${pref.payLabel}（钱包里的报价币，不经 BNB）`, 'ok');
+      else if (pref.path === 'stable-to-quote') toast(`报价币不够，改为${amtNote} ${pref.payLabel}→报价币（不经 BNB）`, 'ok');
+      else toast(`支付改为 ${pref.payLabel}`, 'ok');
+    } else if (pref.path === 'stable-to-quote' || pref.path === 'pay-to-quote') {
+      toast(`用 ${pref.payLabel || getPayToken().label} 支付（不花 BNB）`, 'pending');
     }
     const size = getBuySize();
     const ok = size.mode === 'pct' ? size.pct > 0 : Number(size.amount) > 0;
@@ -548,19 +611,17 @@ async function doTrade(side, card, ca, btn, coin = null) {
       if (mc != null && Number.isFinite(Number(mc))) body.mcUsd = Number(mc);
       const bnb = S.board?.meta?.bnbUsd;
       if (bnb != null && Number.isFinite(Number(bnb))) body.bnbUsd = Number(bnb);
-      const qKey = quotePayKeyForCard(coin);
-      const payIsQuote = qKey && String(payToken).toLowerCase() === String(PAY_TOKEN_MAP[qKey] || '').toLowerCase();
-      if (payIsQuote) {
-        let qpx = payKeyUsdPrice(qKey);
-        // Soft curves quote in BNB — board bnbUsd is the quote USD price.
-        if (!qpx && (qKey === 'BNB' || qKey === 'WBNB') && body.bnbUsd) qpx = body.bnbUsd;
-        if (!qpx && coin?.quoteUsd != null && Number.isFinite(Number(coin.quoteUsd))) qpx = Number(coin.quoteUsd);
-        if (qpx) body.quoteUsd = qpx;
-        body.quoteSymbol = qKey;
-      }
-      // % + quote-direct without prices cannot size — fail in UI before opaque server error.
-      if (getBuySize().mode === 'pct' && payIsQuote && (!body.mcUsd || !body.quoteUsd)) {
-        toast('报价币按 % 买入需要市值与报价币价格（持仓估值）。可改填绝对数量，或等持仓加载后再试', 'err');
+      const qInfo = quoteInfoForCoin(coin);
+      if (qInfo.symbol) body.quoteSymbol = qInfo.symbol;
+      if (qInfo.address) body.quoteAddress = qInfo.address;
+      if (qInfo.usd) body.quoteUsd = qInfo.usd;
+      const pUsd = payTokenUsd(getPayToken(), coin);
+      if (pUsd) body.payUsd = pUsd;
+      const payIsQuote = qInfo.address && String(payToken).toLowerCase() === String(qInfo.address).toLowerCase();
+      const payIsStable = !!(stableByAddress(payToken) || stableByKey(getPayToken().key));
+      // % needs a dollar price of whatever we are actually spending.
+      if (getBuySize().mode === 'pct' && (payIsQuote || payIsStable) && (!body.mcUsd || !body.payUsd)) {
+        toast('按 % 买入需要市值与支付币价格。可改填绝对数量，或等持仓/牌价加载后再试', 'err');
         S.busy.delete(key);
         btn.dataset.busy = '';
         btn.disabled = false;
@@ -594,7 +655,9 @@ async function doTrade(side, card, ca, btn, coin = null) {
     if (padLabel && !msg.includes(padLabel)) msg += ` · ${padLabel}`;
     if (j.tradePath) msg += ` · ${j.tradePath}`;
     if (j.note) msg += ` · ${j.note}`;
-    if (j.bnbSpend) msg += ` · ~${j.bnbSpend} BNB`;
+    if (j.payPath && j.payPath !== 'bnb') msg += ` · ${j.payPath}`;
+    if (j.paySpend && j.payPath && j.payPath !== 'bnb') msg += ` · 花 ${j.paySpend}`;
+    if (j.bnbSpend && (!j.payPath || j.payPath === 'bnb')) msg += ` · ~${j.bnbSpend} BNB`;
     if (j.sellApprove) {
       const sa = j.sellApprove;
       if (sa.needsAppConfirm || sa.pendingConfirmation) msg += ' · 卖出授权待 App 确认';
@@ -1582,7 +1645,10 @@ function syncSellHint() {
   const savedPay = sessionStorage.getItem('curve-pay-token');
   const savedCa = sessionStorage.getItem('curve-pay-ca') || '';
   const payCaEl = $('#pay-ca');
-  if (payCaEl && savedCa) payCaEl.value = savedCa;
+  if (payCaEl && savedCa) {
+    payCaEl.value = savedCa;
+    if (sessionStorage.getItem('curve-pay-ca-auto') === '1') payCaEl.dataset.auto = '1';
+  }
   if (savedPay && Object.prototype.hasOwnProperty.call(PAY_TOKEN_MAP, savedPay)) {
     S.payKey = savedPay;
   } else if (savedPay === 'custom' || savedCa) {
@@ -1594,15 +1660,21 @@ function syncSellHint() {
   $$('#pay-chips .pay-chip').forEach(btn => {
     btn.addEventListener('click', () => {
       S.payKey = btn.dataset.pay;
-      if (payCaEl) payCaEl.value = '';
+      if (payCaEl) {
+        payCaEl.value = '';
+        payCaEl.dataset.auto = '';
+      }
       sessionStorage.setItem('curve-pay-token', S.payKey);
       sessionStorage.setItem('curve-pay-ca', '');
+      sessionStorage.setItem('curve-pay-ca-auto', '');
       syncPayUI();
       syncBuyUI();
     });
   });
 
   payCaEl?.addEventListener('input', () => {
+    payCaEl.dataset.auto = '';
+    sessionStorage.setItem('curve-pay-ca-auto', '');
     const v = payCaEl.value.trim();
     if (v) S.payKey = 'custom';
     else if (!Object.prototype.hasOwnProperty.call(PAY_TOKEN_MAP, S.payKey)) S.payKey = 'BNB';
