@@ -6,7 +6,8 @@
   "description": "Local AI-wallet-only curve terminal board (FLAP agent / GANG / FOUR agent)",
   "scripts": {
     "start": "node server.mjs",
-    "board": "node server.mjs"
+    "board": "node server.mjs",
+    "test": "node --test test/pay-path.test.mjs"
   },
   "engines": { "node": ">=18" }
 }

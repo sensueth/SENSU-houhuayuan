@@ -34,7 +34,18 @@ Requires global `aiwb`, `baw`, and `@gangfun/cli` (`gang`) on PATH. Proxy env is
 | Soft / LaunchpadU / LaunchpadS | `gang` `resolvePad` / `gang token` | `gang quote` (buy gate) → `gang buy\|sell` → `gang execute` |
 | FLAP / FOUR | aiwb handlers | aiwb |
 
-- First **V2/FLAP/FOUR** buy of a CA: `aiwb check` (cached 30 min on pass).
+### Pay path (GANG curve, non-BNB quote)
+
+| Wallet | What gets spent |
+|--------|-----------------|
+| Enough of the curve quote (e.g. oANTHROPIC) | That quote, direct. No hop. |
+| Quote short, USDT (or USDC) covers the sized spend | USDT → quote on Pancake V2 direct, then the curve buy. BNB is not spent. |
+| Both short, quote is not BNB | The buy is refused. BNB is not a fallback. |
+| Quote is BNB/WBNB | BNB, as before. |
+
+A CA typed into the pay box (BSC USDT `0x55d3…7955`) is never cleared and never replaced with BNB. If a hop would return quote worth under half the dollars spent, it is not broadcast.
+
+- First **V2/FLAP/FOUR** buy of a CA: `aiwb check` (cached 30 min on pass) when the pay path is BNB. Quote-direct and USDT→quote use a dry simulation instead, and skip the BNB-hop check.
 - First **Soft/U/S** buy: **`gang quote`** as safety gate (aiwb check is V2-only and would fail — skipped on purpose).
 - Sell Soft/U/S often returns `requireConfirmation` / `pendingConfirmation` → toast **待 App 确认**; confirm in Binance App.
 - `POST /api/trade` with `"dry": true` → gang preview only (**no** execute).

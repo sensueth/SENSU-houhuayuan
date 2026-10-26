@@ -21,6 +21,14 @@ import { fetchFour } from './lib/four.mjs';
 import { fetchGmgnPads, mergeGmgnIntoPad, fetchKline, fetchHolders } from './lib/gmgn.mjs';
 import { fetchGangKline } from './lib/official-kline.mjs';
 import { resolvePad, usesGangCli, gangTrade, gangQuote, gangEnsureSellApprove, peekPadCache } from './lib/gang-cli.mjs';
+import {
+  decideEnginePay,
+  sizePaySpend,
+  stableByAddress,
+  stableByKey,
+  isBnbQuote,
+  knownPayToken,
+} from './lib/pay-path.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -458,6 +466,12 @@ async function getBoard(force = false) {
 function serveStatic(url, res) {
   let rel = url.pathname === '/' ? '/index.html' : url.pathname;
   if (rel.includes('..')) { res.writeHead(400); res.end('bad path'); return; }
+  if (rel === '/pay-path.js') {
+    const file = path.join(__dirname, 'lib', 'pay-path.mjs');
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+    fs.createReadStream(file).pipe(res);
+    return;
+  }
   const file = path.join(PUBLIC, rel);
   if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     res.writeHead(404); res.end('not found'); return;
@@ -572,16 +586,74 @@ function pctToBnbSpend(pct, bodyMcUsd, bodyBnbUsd) {
 }
 
 function normalizePayToken(raw) {
-  if (raw == null || raw === '') return { token: 'BNB', isNative: true };
+  if (raw == null || raw === '') return { token: 'BNB', isNative: true, key: 'BNB' };
+  const known = knownPayToken(raw);
+  if (known) {
+    return { token: known.token, isNative: known.token === 'BNB', key: known.key };
+  }
   const s = String(raw).trim();
-  if (!s || /^BNB$/i.test(s) || /^native$/i.test(s)) {
-    return { token: 'BNB', isNative: true };
-  }
   if (/^0x[a-fA-F0-9]{40}$/.test(s)) {
-    return { token: s, isNative: false };
+    return { token: s, isNative: false, key: 'custom' };
   }
-  // Allow known symbols echoed from client (map not required server-side)
-  return { token: s, isNative: false };
+  return { token: s, isNative: false, key: s };
+}
+
+function lookupBoardCoin(ca) {
+  const want = String(ca || '').toLowerCase();
+  if (!want || !cache?.payload) return null;
+  const lists = [cache.payload.new, cache.payload.near, cache.payload.graduated];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const c of list) {
+      const a = String(c?.address || c?.ca || c?.tradeCa || '').toLowerCase();
+      const t = String(c?.tradeCa || '').toLowerCase();
+      if (a === want || t === want) return c;
+    }
+  }
+  return null;
+}
+
+function resolvePayUsd(pay, body) {
+  const fromBody = Number(body?.payUsd);
+  if (fromBody > 0) return fromBody;
+  const stable = stableByAddress(pay?.token) || stableByKey(pay?.key) || stableByKey(pay?.token);
+  if (stable) return stable.usd;
+  if (pay?.isNative) {
+    const px = Number(body?.bnbUsd != null && body.bnbUsd !== '' ? body.bnbUsd : bnbUsd);
+    if (px > 0) return px;
+  }
+  return null;
+}
+
+function resolveQuoteUsd(body, ca) {
+  const coin = lookupBoardCoin(ca);
+  const fromCard = Number(coin?.quoteUsd ?? coin?.extra?.quoteUsd);
+  const fromBody = Number(body?.quoteUsd);
+  if (fromCard > 0 && fromBody > 0) {
+    const ratio = fromBody / fromCard;
+    if (ratio < 0.5 || ratio > 2) return fromCard;
+    return fromBody;
+  }
+  if (fromCard > 0) return fromCard;
+  if (fromBody > 0) return fromBody;
+  const sym = String(body?.quoteSymbol || coin?.quote || '');
+  const addr = body?.quoteAddress || coin?.extra?.quoteAddress || coin?.quoteAddress || null;
+  if (isBnbQuote(sym, addr)) {
+    const px = Number(body?.bnbUsd != null && body.bnbUsd !== '' ? body.bnbUsd : bnbUsd);
+    if (px > 0) return px;
+  }
+  if (stableByAddress(addr) || stableByKey(sym)) return 1;
+  return null;
+}
+
+function coinQuoteAddress(body, ca) {
+  const coin = lookupBoardCoin(ca);
+  return body?.quoteAddress || coin?.extra?.quoteAddress || coin?.quoteAddress || null;
+}
+
+function coinQuoteSymbol(body, ca) {
+  const coin = lookupBoardCoin(ca);
+  return body?.quoteSymbol || coin?.quote || null;
 }
 
 function clarifyTradeError(err, { platform, track, pad } = {}) {
@@ -849,18 +921,50 @@ async function handleTrade(body) {
   const pay = side === 'buy' ? normalizePayToken(body?.payToken) : null;
 
   let bnbSpend = null;
+  let paySpend = null;
   let convertMeta = null;
   if (side === 'buy') {
-    if (amt.mode === 'pct') {
+    const payUsdEarly = resolvePayUsd(pay, body);
+    const quoteUsdEarly = resolveQuoteUsd(body, ca);
+    if (!pay.isNative) {
+      // Amount is in the pay token (USDT, quote, …). Never clamp it as if it were BNB.
+      const mc = Number(body?.mcUsd) > 0 ? Number(body.mcUsd) : lookupBoardMcUsd(ca);
+      const stable = stableByAddress(pay.token) || stableByKey(pay.key);
+      const sized = sizePaySpend({
+        mode: amt.mode === 'pct' ? 'pct' : 'abs',
+        pct: amt.pct,
+        absAmount: amt.amount,
+        mcUsd: mc,
+        payUsd: payUsdEarly,
+        maxAmount: stable ? 10_000 : null,
+      });
+      if (!sized.ok) {
+        return {
+          status: 400,
+          body: { ok: false, error: sized.error, payToken: pay.token, amount: amt.amount },
+        };
+      }
+      paySpend = sized.amount;
+      convertMeta = {
+        mode: amt.mode === 'pct' ? 'pct-pay' : 'pay-token',
+        payToken: pay.token,
+        paySpend,
+        payUsd: sized.payUsd,
+        spendUsd: sized.spendUsd,
+        quoteUsd: quoteUsdEarly,
+      };
+    } else if (amt.mode === 'pct') {
       const conv = pctToBnbSpend(amt.pct, body?.mcUsd, body?.bnbUsd);
       if (!conv.ok) return { status: 400, body: { ok: false, error: conv.error, amount: amt.amount } };
       bnbSpend = conv.bnb;
+      paySpend = conv.bnb;
       convertMeta = { mode: 'pct', pct: amt.pct, mcUsd: conv.mcUsd, bnbUsd: conv.bnbUsd };
     } else {
-      // Absolute BNB; still clamp to (0, 50]
+      // Absolute BNB; still clamp to (0, 50]. Used only when the curve quote is BNB.
       let n = Number(amt.amount);
       if (n > 50) n = 50;
       bnbSpend = String(Number(n.toFixed(6)));
+      paySpend = bnbSpend;
       convertMeta = { mode: 'bnb' };
     }
   }
@@ -883,6 +987,24 @@ async function handleTrade(body) {
       }
       padForErr = route?.pad || gangPadHint || null;
       if (route?.tradePath === 'gang-cli') {
+        if (side === 'buy' && pay && !pay.isNative) {
+          const qAddr = coinQuoteAddress(body, ca);
+          const isQuote = qAddr && String(pay.token).toLowerCase() === String(qAddr).toLowerCase();
+          if (!isQuote) {
+            return {
+              status: 400,
+              body: {
+                ok: false, side, ca, platform, track, pad: route.pad, tradePath: 'gang-cli',
+                payToken: pay.token, amount: amt.amount,
+                error: '这笔支付币不是曲线报价币。Soft/U/S 的 gang CLI 不会做 USDT→报价币，也拒绝改花 BNB。Nothing was sent.',
+                tookMs: Date.now() - t0,
+              },
+            };
+          }
+          // Official CLI `--bnb` on U/S/V2 is the quote amount.
+          bnbSpend = paySpend;
+          convertMeta = { ...(convertMeta || {}), mode: 'quote-cli', paySpend };
+        }
         return await handleGangCliTrade({
           side, ca, amt, bnbSpend, convertMeta, pay, dry, platform, track,
           pad: route.pad, t0,
@@ -890,165 +1012,166 @@ async function handleTrade(body) {
       }
 
       if (side === 'buy') {
-        // Quote-direct: client pays curve quote ERC-20 (GANG/BNCB/…) — amount in quote units.
-        // Stock aiwb check always sims BNB→quote hop and can false-fail; skip it and gate via quote-direct dry sim.
-        const quoteDirect = !pay.isNative && /^0x[a-fA-F0-9]{40}$/i.test(pay.token);
-        let quoteSpend = quoteDirect
-          ? (amt.mode === 'pct' ? null : String(amt.amount))
-          : bnbSpend;
-        if (quoteDirect && amt.mode === 'pct') {
-          let mc = Number(body?.mcUsd);
-          let qpx = Number(body?.quoteUsd);
-          if (!Number.isFinite(mc) || mc <= 0) {
-            const fromBoard = lookupBoardMcUsd(ca);
-            if (fromBoard) mc = fromBoard;
-          }
-          // Soft / BNB-quoted curves: board bnbUsd is the quote USD price.
-          if ((!Number.isFinite(qpx) || qpx <= 0) && Number.isFinite(Number(bnbUsd)) && Number(bnbUsd) > 0) {
-            const qSym = String(body?.quoteSymbol || '').toUpperCase();
-            if (!qSym || qSym === 'BNB' || qSym === 'WBNB') qpx = Number(bnbUsd);
-          }
-          if (!Number.isFinite(mc) || mc <= 0 || !Number.isFinite(qpx) || qpx <= 0) {
+        const quoteSymbol = coinQuoteSymbol(body, ca);
+        const quoteAddress = coinQuoteAddress(body, ca);
+        const quoteUsdResolved = resolveQuoteUsd(body, ca);
+        const payUsdResolved = resolvePayUsd(pay, body);
+        const graduatedTrade = graduated || !!route?.graduated;
+        const spendAmount = paySpend;
+        const buyOpts = {
+          platformHint: platform,
+          graduated: graduatedTrade,
+          payToken: pay.token,
+          quoteUsd: quoteUsdResolved,
+          payUsd: payUsdResolved,
+        };
+
+        // No in-process engine: aiwb CLI always sizes in BNB. Refuse anything else.
+        if (!tradeEngine) {
+          const hinted = decideEnginePay({
+            payToken: pay.token,
+            quoteAddress,
+            quoteSymbol,
+            platform: platform || (quoteSymbol && !isBnbQuote(quoteSymbol, quoteAddress) ? 'gang' : platform),
+            graduated: graduatedTrade,
+          });
+          if (!hinted.ok || hinted.path !== 'bnb') {
             return {
               status: 400,
               body: {
-                ok: false, side, ca,
-                payToken: pay.token, amount: amt.amount,
-                error: '报价币按 % 买需要市值+报价币美元价（或改填绝对数量）；持仓未加载时无法估报价币单价',
+                ok: false, side, ca, payToken: pay.token, amount: amt.amount, paySpend: spendAmount,
+                error: hinted.error || '进程内交易引擎不可用。拒绝用 aiwb CLI 花 BNB。Nothing was sent.',
+                payPath: 'refuse',
                 platform, track, tookMs: Date.now() - t0,
               },
             };
           }
-          let qAmt = (amt.pct / 100) * mc / qpx;
-          if (!Number.isFinite(qAmt) || qAmt <= 0) {
-            return {
-              status: 400,
-              body: {
-                ok: false, side, ca, payToken: pay.token, amount: amt.amount,
-                error: 'estimated quote spend is not positive',
-                platform, track, tookMs: Date.now() - t0,
-              },
-            };
-          }
-          quoteSpend = String(Number(qAmt.toFixed(6)));
-          convertMeta = { mode: 'pct-quote', pct: amt.pct, mcUsd: mc, quoteUsd: qpx, quoteSpend };
         }
 
         let ensured = { check: null, cached: false, pass: { ok: true }, info: null };
         let checkMs = 0;
         const checkT0 = Date.now();
-        if (quoteDirect && platform === 'gang' && tradeEngine) {
-          // Gate = quote-direct dry simulate (approve+buy, no BNB hop)
+        let preview = null;
+        let payPath = pay.isNative ? 'bnb' : null;
+
+        if (tradeEngine) {
           try {
-            const gate = await withTimeout(
-              tradeEngine.runBuy(ca, quoteSpend, {
-                dryRun: true,
-                platformHint: platform,
-                graduated,
-                payToken: pay.token,
-              }),
+            preview = await withTimeout(
+              tradeEngine.runBuy(ca, spendAmount, { ...buyOpts, dryRun: true }),
               Math.min(TRADE_TIMEOUT_MS, 120_000),
-              'quote-direct check',
+              'pay-path check',
             );
             checkMs = Date.now() - checkT0;
-            if (gate?.error) {
-              return {
-                status: 400,
-                body: {
-                  ok: false, side, ca, check: gate, payToken: pay.token, amount: amt.amount,
-                  quoteSpend, error: clarifyTradeError(gate.error, { platform, track, pad: padForErr }),
-                  platform, track, checkMs, payPath: 'quote-direct', tookMs: Date.now() - t0,
-                },
-              };
-            }
-            check = {
-              verdict: 'quote-direct-sim-ok',
-              gate: 'quote-direct-dry',
-              payPath: gate?.payPath || 'quote-direct',
-              via: gate?.via || gate?.plan?.via,
-              steps: gate?.plan?.steps || null,
-              noBnbHop: !!(gate?.plan?.noBnbHop || gate?.payPath === 'quote-direct'),
-            };
-            ensured = { check, cached: false, pass: { ok: true }, info: null };
           } catch (e) {
-            checkMs = Date.now() - checkT0;
             return {
               status: 400,
               body: {
-                ok: false, side, ca, payToken: pay.token, amount: amt.amount, quoteSpend,
-                error: clarifyTradeError(e.message || 'quote-direct check failed', { platform, track, pad: padForErr }),
-                platform, track, checkMs, payPath: 'quote-direct', tookMs: Date.now() - t0,
+                ok: false, side, ca, payToken: pay.token, amount: amt.amount, paySpend: spendAmount,
+                quoteSymbol, quoteAddress, quoteUsd: quoteUsdResolved,
+                error: clarifyTradeError(e.message || 'pay-path check failed', { platform, track, pad: padForErr }),
+                platform, track, payPath: 'refuse', tookMs: Date.now() - t0,
               },
             };
           }
-        } else {
-          ensured = await ensureCheck(ca, { platformHint: platform });
-          check = ensured.check;
-          checkMs = Date.now() - checkT0;
-          if (!ensured.pass.ok) {
+          if (preview?.error) {
             return {
               status: 400,
               body: {
-                ok: false,
-                side,
-                ca,
-                check,
-                payToken: pay.token,
-                amount: amt.amount,
-                bnbSpend,
-                error: clarifyTradeError(ensured.pass.reason || 'check failed', { platform, track, pad: padForErr }),
-                platform, track, checkMs, cachedCheck: ensured.cached, tookMs: Date.now() - t0,
+                ok: false, side, ca, check: preview, payToken: pay.token, amount: amt.amount,
+                paySpend: spendAmount,
+                error: clarifyTradeError(preview.error, { platform, track, pad: padForErr }),
+                platform, track, payPath: 'refuse', tookMs: Date.now() - t0,
               },
+            };
+          }
+          payPath = preview?.payPath || null;
+          if (!payPath || (!pay.isNative && payPath === 'bnb')) {
+            return {
+              status: 400,
+              body: {
+                ok: false, side, ca, payToken: pay.token, amount: amt.amount, paySpend: spendAmount,
+                error: '支付币没有按原样执行（引擎仍会花 BNB）。已中止。Nothing was sent.',
+                platform, track, payPath: 'refuse', tookMs: Date.now() - t0,
+              },
+            };
+          }
+          if (payPath === 'bnb') {
+            ensured = await ensureCheck(ca, { platformHint: platform });
+            check = ensured.check;
+            checkMs = Date.now() - checkT0;
+            if (!ensured.pass.ok) {
+              return {
+                status: 400,
+                body: {
+                  ok: false, side, ca, check, payToken: pay.token, amount: amt.amount, bnbSpend,
+                  error: clarifyTradeError(ensured.pass.reason || 'check failed', { platform, track, pad: padForErr }),
+                  platform, track, checkMs, cachedCheck: ensured.cached, payPath, tookMs: Date.now() - t0,
+                },
+              };
+            }
+          } else {
+            check = {
+              verdict: 'pay-path-sim-ok',
+              gate: 'dry-run',
+              payPath,
+              via: preview?.via || preview?.plan?.via,
+              steps: preview?.plan?.steps || null,
+              noBnbHop: preview?.payPath !== 'bnb',
+              spendUsd: preview?.plan?.spendUsd ?? preview?.spendUsd ?? null,
+              receivedUsd: preview?.plan?.receivedUsd ?? preview?.receivedUsd ?? null,
+              receivedRatio: preview?.plan?.receivedRatio ?? null,
             };
           }
         }
 
         const noteParts = [];
-        if (quoteDirect) noteParts.push('pay=quote-direct (wallet quote → launchpad, no BNB hop)');
-        else if (!pay.isNative) noteParts.push('non-BNB payToken ignored for sizing — aiwb spends BNB (may swap to quote)');
+        if (payPath === 'quote-direct') noteParts.push('pay=quote-direct (wallet quote → launchpad, no BNB hop)');
+        else if (payPath === 'stable-to-quote') noteParts.push(`pay=${preview?.paySymbol || preview?.plan?.paySymbol || pay.key || 'USDT'}→quote (no BNB)`);
+        else if (payPath === 'pay-to-quote') noteParts.push('pay=erc20→quote (no BNB hop)');
+        else noteParts.push('pay=BNB (quote is BNB)');
         if (ensured.cached) noteParts.push('check cache hit — skipped re-audit');
         if (ensured.info?.handler) noteParts.push('reuse detect info');
-        if (quoteDirect && platform === 'gang') noteParts.push('check=quote-direct-sim (aiwb BNB-hop check skipped)');
         noteParts.push(tradeEngine ? 'in-process engine' : 'aiwb CLI');
         let note = noteParts.join(' · ');
 
-        let result;
+        let result = preview;
         const buyT0 = Date.now();
         if (tradeEngine) {
-          result = await withTimeout(
-            tradeEngine.runBuy(ca, quoteDirect ? quoteSpend : bnbSpend, {
-              dryRun: dry,
-              info: ensured.info,
-              platformHint: platform,
-              graduated,
-              payToken: pay.token,
-            }),
-            TRADE_TIMEOUT_MS,
-            'aiwb buy',
-          );
-        } else if (quoteDirect) {
-          return {
-            status: 400,
-            body: {
-              ok: false, side, ca, check, payToken: pay.token, amount: amt.amount,
-              error: 'quote-direct buy needs in-process trade engine (aiwb CLI is BNB-only)',
-              platform, track, checkMs, cachedCheck: ensured.cached, tookMs: Date.now() - t0,
-            },
-          };
+          if (!dry) {
+            result = await withTimeout(
+              tradeEngine.runBuy(ca, spendAmount, { ...buyOpts, dryRun: false, info: ensured.info }),
+              TRADE_TIMEOUT_MS,
+              'aiwb buy',
+            );
+          }
         } else {
           const args = ['buy', ca, bnbSpend];
           if (dry) args.push('--dry');
           result = await aiwbJson(args);
         }
         const buyMs = Date.now() - buyT0;
+        const livePath = result?.payPath || payPath;
+        if (livePath === 'bnb' && !pay.isNative) {
+          return {
+            status: 400,
+            body: {
+              ok: false, side, ca, check, result, payToken: pay.token, amount: amt.amount,
+              error: '广播前发现仍会花 BNB，已中止。Nothing was sent.',
+              platform, track, payPath: 'refuse', tookMs: Date.now() - t0,
+            },
+          };
+        }
         if (result?.error) {
           return {
             status: 400,
             body: {
               ok: false, side, ca, check, result,
-              payToken: pay.token, amount: amt.amount, bnbSpend, convert: convertMeta, note,
+              payToken: pay.token, amount: amt.amount,
+              bnbSpend: livePath === 'bnb' ? bnbSpend : null,
+              paySpend: spendAmount, convert: convertMeta, note,
               error: clarifyTradeError(result.error, { platform, track, pad: padForErr }),
-              platform, track, pad: padForErr, checkMs, buyMs, cachedCheck: ensured.cached, tookMs: Date.now() - t0,
+              platform, track, pad: padForErr, checkMs, buyMs, cachedCheck: ensured.cached,
+              payPath: livePath, tookMs: Date.now() - t0,
             },
           };
         }
@@ -1071,9 +1194,12 @@ async function handleTrade(body) {
           status: 200,
           body: {
             ok: true, side, ca, check, result,
-            payToken: pay.token, amount: amt.amount, bnbSpend, convert: convertMeta, note,
-            payPath: result?.payPath || (quoteDirect ? 'quote-direct' : 'bnb'),
-            quoteSpend: quoteDirect ? quoteSpend : null,
+            payToken: pay.token, amount: amt.amount,
+            bnbSpend: livePath === 'bnb' ? bnbSpend : null,
+            paySpend: spendAmount,
+            convert: convertMeta, note,
+            payPath: livePath,
+            quoteSpend: livePath === 'quote-direct' ? spendAmount : (result?.spendQuote || result?.plan?.expectedQuote || null),
             sellApprove,
             platform, track, checkMs, buyMs, cachedCheck: ensured.cached, tookMs: Date.now() - t0,
           },
